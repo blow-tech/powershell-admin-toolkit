@@ -1,23 +1,27 @@
 # PowerShell Admin Toolkit
 
-PowerShell scripts for Windows system administration, inventory, and read-only health checks.
+PowerShell scripts for Windows administration, inventory, backup, cleanup, and maintenance tasks.
 
 ## Scripts
 
-### Get-SystemInfo.ps1
+### Inventory
 
-Collects basic system information from a Windows machine.
+| Script | Description | Risk Level |
+|---|---|---|
+| `scripts/Get-SystemInfo.ps1` | Collects basic Windows system information. | Read-only |
+| `scripts/inventory/Audit.ps1` | Generates a Windows audit report. | Read-only / information gathering |
 
-Checks include:
+### Backup
 
-- Computer name
-- Windows version
-- OS architecture
-- Hardware manufacturer and model
-- CPU details
-- Total memory
-- Disk size and free space
-- Network configuration
+| Script | Description | Risk Level |
+|---|---|---|
+| `backup/ADBackUp.ps1` | Performs Active Directory or Windows Server backup-related tasks. | Administrative change |
+
+### Cleanup
+
+| Script | Description | Risk Level |
+|---|---|---|
+| `scripts/cleanup/DiskCleanup.ps1` | Cleans temporary files, cache, logs, or old files depending on script configuration. | Deletes files |
 
 ## Usage
 
@@ -26,38 +30,3 @@ Clone the repository:
 ```powershell
 git clone https://github.com/blow-tech/powershell-admin-toolkit.git
 cd powershell-admin-toolkit
-```
-
-Run the script:
-
-```powershell
-.\scripts\Get-SystemInfo.ps1
-```
-
-## Safety
-
-This script is read-only.
-
-It does not modify:
-
-- Users or groups
-- Services
-- Registry keys
-- Firewall rules
-- Network settings
-- System configuration
-
-## Requirements
-
-- Windows 10/11 or Windows Server
-- PowerShell 5.1 or newer
-
-## Planned Scripts
-
-- Disk space report
-- Local user inventory
-- Windows service status check
-- Event log error summary
-- Basic server health check
-
-- PowerShell scripts for Windows administration, inventory, backup, and maintenance tasks.
