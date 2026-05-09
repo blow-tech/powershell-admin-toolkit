@@ -59,3 +59,5 @@ It does not modify:
 - Windows service status check
 - Event log error summary
 - Basic server health check
+
+- PowerShell scripts for Windows administration, inventory, backup, and maintenance tasks.
