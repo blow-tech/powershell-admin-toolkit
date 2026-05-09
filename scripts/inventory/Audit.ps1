@@ -1,8 +1,7 @@
 #####################################################
 #				                    #
 #    Audit script V3 by blow_tech -Al      #
-#    Blog: http://virtu-al.net/	                    #
-#	     		                            #
+#                                                #
 #    Usage: Audit.ps1 'pathtolistofservers'         #
 # 			                            #
 #    The file is optional and needs to be a 	    #
