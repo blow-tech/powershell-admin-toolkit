@@ -1,0 +1,134 @@
+#Requires -Modules ActiveDirectory
+
+<#
+.SYNOPSIS
+    Queries Security event logs on computers in an AD OU for Logon and Logoff events.
+
+.DESCRIPTION
+    Retrieves computers from a specified OU and queries each machine's Security event log
+    for Event ID 4648 (Logon) and 4647 (Logoff). Results are displayed in the console
+    and optionally exported to CSV.
+
+    Requires WinRM/PowerShell Remoting to be enabled on target machines and that
+    the running account has rights to read the remote Security event log.
+
+.PARAMETER SearchBase
+    DistinguishedName of the OU containing the target computers.
+
+.PARAMETER OutputFile
+    Optional. Full path to export results as CSV.
+
+.PARAMETER DaysBack
+    Optional. Only retrieve events from the past N days. Default: 1 (last 24 hours)
+
+.EXAMPLE
+    .\GetUsersLogonLogoffEvents.ps1 -SearchBase "OU=Desktops,DC=lab,DC=local"
+
+.EXAMPLE
+    .\GetUsersLogonLogoffEvents.ps1 -SearchBase "OU=Desktops,DC=lab,DC=local" `
+                                    -OutputFile "C:\Reports\LogonEvents.csv" `
+                                    -DaysBack 7
+
+.NOTES
+    Author:  blow-tech
+    Version: 1.1
+#>
+
+[CmdletBinding()]
+Param(
+    [Parameter(Mandatory = $true)]
+    [string]$SearchBase,
+
+    [Parameter(Mandatory = $false)]
+    [string]$OutputFile,
+
+    [Parameter(Mandatory = $false)]
+    [int]$DaysBack = 1
+)
+
+Import-Module ActiveDirectory -ErrorAction Stop
+
+# ── Get Computers ──────────────────────────────────────────────────────────────
+Write-Host "[*] Retrieving computers from: $SearchBase" -ForegroundColor Cyan
+
+try {
+    $computers = (Get-ADComputer -SearchBase $SearchBase -Filter * -ErrorAction Stop).Name
+    Write-Host "[+] Found $($computers.Count) computer(s)." -ForegroundColor Green
+}
+catch {
+    Write-Error "[!] Failed to retrieve computers from AD: $_"
+    exit 1
+}
+
+# ── Build XPath filter for Event IDs 4647 (Logoff) and 4648 (Logon) ───────────
+$startTime     = (Get-Date).AddDays(-$DaysBack).ToString("yyyy-MM-ddTHH:mm:ss")
+$eventFilter   = "*[System[(EventID=4647 or EventID=4648) and TimeCreated[@SystemTime >= '$startTime']]]"
+
+# ── Result collection ──────────────────────────────────────────────────────────
+$allResults = [System.Collections.Generic.List[PSCustomObject]]::new()
+
+$selectOutput = @(
+    @{ n = 'ComputerName'; e = { $_.MachineName } },
+    @{ n = 'Event';        e = { if ($_.Id -eq '4648') { 'Logon' } else { 'Logoff' } } },
+    @{ n = 'Time';         e = { $_.TimeCreated } },
+    @{ n = 'Account';      e = {
+        if ($_.Id -eq '4647') { $i = 1 } else { $i = 3 }
+        [regex]::Matches($_.Message, 'Account Name:\s+(.*)\n').Groups[$i].Value.Trim()
+    }}
+)
+
+# ── Query each computer ────────────────────────────────────────────────────────
+$counter = 0
+foreach ($computer in $computers) {
+    $counter++
+    Write-Progress -Activity "Querying event logs" `
+                   -Status "[$counter/$($computers.Count)] $computer" `
+                   -PercentComplete (($counter / $computers.Count) * 100)
+
+    try {
+        $events = Get-WinEvent -ComputerName $computer `
+                               -LogName Security `
+                               -FilterXPath $eventFilter `
+                               -ErrorAction Stop
+
+        foreach ($e in ($events | Select-Object $selectOutput)) {
+            $allResults.Add([PSCustomObject]@{
+                ComputerName = $e.ComputerName
+                Event        = $e.Event
+                Time         = $e.Time
+                Account      = $e.Account
+            })
+        }
+
+        Write-Host "[+] $computer — $($events.Count) event(s) found." -ForegroundColor Green
+    }
+    catch [System.Exception] {
+        if ($_.Exception.Message -match "No events were found") {
+            Write-Host "[i] $computer — No matching events in the last $DaysBack day(s)." -ForegroundColor Gray
+        }
+        else {
+            Write-Warning "[!] $computer — Could not query event log: $($_.Exception.Message)"
+        }
+    }
+}
+
+Write-Progress -Activity "Querying event logs" -Completed
+
+# ── Display ────────────────────────────────────────────────────────────────────
+if ($allResults.Count -gt 0) {
+    $allResults | Sort-Object Time -Descending | Format-Table -AutoSize
+}
+else {
+    Write-Host "[i] No logon/logoff events found across all queried machines." -ForegroundColor Yellow
+}
+
+# ── Export ─────────────────────────────────────────────────────────────────────
+if ($PSBoundParameters.ContainsKey('OutputFile')) {
+    try {
+        $allResults | Export-Csv -Path $OutputFile -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
+        Write-Host "[+] Results exported to: $OutputFile" -ForegroundColor Green
+    }
+    catch {
+        Write-Error "[!] Failed to write output file: $_"
+    }
+}
