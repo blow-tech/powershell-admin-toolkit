@@ -1,0 +1,122 @@
+#Requires -Modules ExchangeOnlineManagement
+
+<#
+.SYNOPSIS
+    Exports all Exchange Online Distribution Groups and their members to a CSV file.
+
+.DESCRIPTION
+    Connects to Exchange Online using the modern ExchangeOnlineManagement v3 module
+    and retrieves every Distribution Group along with each member's display name,
+    email address, recipient type, and group member count.
+
+    Output is written to a CSV file defined by the -OutputFile parameter.
+
+.PARAMETER UserPrincipalName
+    The UPN of the admin account used to connect to Exchange Online.
+    Example: admin@contoso.onmicrosoft.com
+
+.PARAMETER OutputFile
+    Path to the output CSV file. Defaults to DistributionGroupMembers.csv in the
+    current directory.
+
+.EXAMPLE
+    .\ExchangeOnlineGetDistributionGroupMembers.ps1 -UserPrincipalName "admin@contoso.onmicrosoft.com"
+
+.EXAMPLE
+    .\ExchangeOnlineGetDistributionGroupMembers.ps1 -UserPrincipalName "admin@contoso.onmicrosoft.com" -OutputFile "C:\Reports\DLMembers.csv"
+
+.NOTES
+    Requires: ExchangeOnlineManagement v3+
+    Install:  Install-Module ExchangeOnlineManagement -Force
+    Author:   blow-tech
+    Version:  2.0 - Migrated from deprecated Basic Auth / remote PSSession to EXO v3
+#>
+
+[CmdletBinding()]
+Param(
+    [Parameter(Mandatory = $true)]
+    [string]$UserPrincipalName,
+
+    [Parameter(Mandatory = $false)]
+    [string]$OutputFile = ".\DistributionGroupMembers.csv"
+)
+
+# ── Connect ────────────────────────────────────────────────────────────────────
+Write-Host "[*] Connecting to Exchange Online as $UserPrincipalName..." -ForegroundColor Cyan
+try {
+    Connect-ExchangeOnline -UserPrincipalName $UserPrincipalName -ShowBanner:$false -ErrorAction Stop
+    Write-Host "[+] Connected successfully." -ForegroundColor Green
+}
+catch {
+    Write-Error "[!] Failed to connect to Exchange Online: $_"
+    exit 1
+}
+
+# ── Collect Data ───────────────────────────────────────────────────────────────
+$results = [System.Collections.Generic.List[PSCustomObject]]::new()
+
+Write-Host "[*] Retrieving Distribution Groups..." -ForegroundColor Cyan
+try {
+    $distributionGroups = Get-DistributionGroup -ResultSize Unlimited -ErrorAction Stop
+    Write-Host "[+] Found $($distributionGroups.Count) distribution group(s)." -ForegroundColor Green
+}
+catch {
+    Write-Error "[!] Failed to retrieve Distribution Groups: $_"
+    Disconnect-ExchangeOnline -Confirm:$false
+    exit 1
+}
+
+$counter = 0
+foreach ($group in $distributionGroups) {
+    $counter++
+    $pct = [math]::Round(($counter / $distributionGroups.Count) * 100)
+    Write-Progress -Activity "Processing Distribution Groups" `
+                   -Status "[$counter/$($distributionGroups.Count)] $($group.DisplayName)" `
+                   -PercentComplete $pct
+
+    try {
+        $members = Get-DistributionGroupMember -Identity $group.PrimarySmtpAddress -ResultSize Unlimited -ErrorAction Stop
+
+        if ($members.Count -eq 0) {
+            # Record empty groups so they still appear in the report
+            $results.Add([PSCustomObject]@{
+                GroupDisplayName  = $group.DisplayName
+                GroupEmail        = $group.PrimarySmtpAddress
+                MemberDisplayName = "(No Members)"
+                MemberEmail       = ""
+                MemberType        = ""
+                MemberCount       = 0
+            })
+        }
+        else {
+            foreach ($member in $members) {
+                $results.Add([PSCustomObject]@{
+                    GroupDisplayName  = $group.DisplayName
+                    GroupEmail        = $group.PrimarySmtpAddress
+                    MemberDisplayName = $member.DisplayName
+                    MemberEmail       = $member.PrimarySmtpAddress
+                    MemberType        = $member.RecipientType
+                    MemberCount       = $members.Count
+                })
+            }
+        }
+    }
+    catch {
+        Write-Warning "[!] Could not retrieve members for group '$($group.DisplayName)': $_"
+    }
+}
+
+Write-Progress -Activity "Processing Distribution Groups" -Completed
+
+# ── Export ─────────────────────────────────────────────────────────────────────
+try {
+    $results | Export-Csv -Path $OutputFile -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
+    Write-Host "[+] Report saved to: $OutputFile ($($results.Count) rows)" -ForegroundColor Green
+}
+catch {
+    Write-Error "[!] Failed to write output file: $_"
+}
+
+# ── Disconnect ─────────────────────────────────────────────────────────────────
+Disconnect-ExchangeOnline -Confirm:$false
+Write-Host "[+] Disconnected. Done." -ForegroundColor Green
