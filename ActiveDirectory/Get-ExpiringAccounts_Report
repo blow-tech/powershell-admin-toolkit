@@ -1,0 +1,132 @@
+#Requires -Modules ActiveDirectory
+
+<#
+.SYNOPSIS
+    Reports on AD user accounts expiring within N days and emails an HTML report.
+
+.DESCRIPTION
+    Searches Active Directory for user accounts expiring within the specified number
+    of days. Generates an HTML-formatted email and sends it to the configured
+    administrator address.
+
+.PARAMETER Days
+    Number of days ahead to look for expiring accounts. Default: 10
+
+.PARAMETER SearchBase
+    DistinguishedName of the OU to search. Default: OU=Sales,DC=CONTOSO,DC=COM
+
+.PARAMETER EmailFrom
+    Sender address for the report email.
+
+.PARAMETER EmailTo
+    Recipient address for the report email.
+
+.PARAMETER EmailSMTPServer
+    SMTP server hostname or IP.
+
+.EXAMPLE
+    .\GetADExpiringUserAccountsReport.ps1 -Days 7 `
+        -SearchBase "OU=Staff,DC=contoso,DC=com" `
+        -EmailFrom "noreply@contoso.com" `
+        -EmailTo "it-admin@contoso.com" `
+        -EmailSMTPServer "smtp.contoso.com"
+
+.NOTES
+    FIX: Corrected missing closing parenthesis in $NoteLine string.
+    Author:  blow-tech
+    Version: 1.2
+#>
+
+[CmdletBinding()]
+PARAM (
+    [Alias("ExpirationDays")]
+    [Int]$Days = 10,
+
+    [String]$SearchBase = "OU=Sales,DC=CONTOSO,DC=COM",   # Change to match your environment
+
+    [Parameter(Mandatory = $true)]
+    [string]$EmailFrom,
+
+    [Parameter(Mandatory = $true)]
+    [string]$EmailTo,
+
+    [Parameter(Mandatory = $true)]
+    [String]$EmailSMTPServer
+)
+
+BEGIN {
+    Import-Module ActiveDirectory -ErrorAction Stop
+
+    [String]$EmailSubject = "PS Report - Active Directory - Expiring Users (in the next $Days days)"
+    [String]$NoteLine     = "Generated from $($env:COMPUTERNAME) on $(Get-Date -Format 'yyyy/MM/dd HH:mm:ss')"
+    # FIX: Original was missing the closing ) on Get-Date call, causing a parse error.
+}
+
+PROCESS {
+    TRY {
+        Write-Host "[*] Searching for accounts expiring within $Days day(s)..." -ForegroundColor Cyan
+
+        $Accounts = Search-ADAccount -AccountExpiring `
+                                     -SearchBase $SearchBase `
+                                     -TimeSpan "$($Days).00:00:00" `
+                                     -ErrorAction Stop |
+            Select-Object -Property `
+                AccountExpirationDate,
+                Name,
+                SamAccountName,
+                @{
+                    Label      = "Manager"
+                    Expression = {
+                        try {
+                            (Get-ADUser (Get-ADUser $_ -Property Manager -ErrorAction Stop).Manager `
+                                        -ErrorAction Stop).Name
+                        }
+                        catch { "N/A" }
+                    }
+                },
+                DistinguishedName
+
+        Write-Host "[+] Found $(@($Accounts).Count) expiring account(s)." -ForegroundColor Green
+
+        # ── HTML Styling ────────────────────────────────────────────────────
+        $Css = @"
+<style>
+body  { font-family: Verdana, Arial, sans-serif; font-size: 12px; }
+table { font-size: 11px; color: #333333; border-width: 1px; border-color: #666666; border-collapse: collapse; width: 100%; }
+th    { border-width: 1px; padding: 8px; border-style: solid; border-color: #666666; background-color: #4472C4; color: white; }
+td    { border-width: 1px; padding: 8px; border-style: solid; border-color: #666666; background-color: #ffffff; }
+tr:nth-child(even) td { background-color: #f2f2f2; }
+</style>
+"@
+
+        $PreContent  = "<h2>Active Directory - Expiring User Accounts (next $Days days)</h2>"
+        $PostContent = "<br><p><font size='2'><i>$NoteLine</i></font></p>"
+
+        # ── Build Body ──────────────────────────────────────────────────────
+        if (-not $Accounts) {
+            $Body = "No user accounts expiring in the next $Days days.<br>$PostContent"
+        }
+        else {
+            $Body = $Accounts |
+                ConvertTo-Html -Head $Css -PreContent $PreContent -PostContent $PostContent |
+                Out-String
+        }
+
+        # ── Send Email ──────────────────────────────────────────────────────
+        Send-MailMessage -SmtpServer $EmailSMTPServer `
+                         -From $EmailFrom `
+                         -To $EmailTo `
+                         -Subject $EmailSubject `
+                         -Body $Body `
+                         -BodyAsHtml `
+                         -Encoding UTF8 `
+                         -ErrorAction Stop
+
+        Write-Host "[+] Report emailed to $EmailTo" -ForegroundColor Green
+    }
+    CATCH {
+        Write-Warning "[!] An error occurred: $($Error[0].Exception.Message)"
+    }
+}
+
+END {}
