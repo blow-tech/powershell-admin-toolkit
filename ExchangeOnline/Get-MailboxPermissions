@@ -1,0 +1,96 @@
+#Requires -Modules ExchangeOnlineManagement
+
+<#
+.SYNOPSIS
+    Lists all mailboxes where other users have Full Access or Send As permissions.
+
+.DESCRIPTION
+    Connects to Exchange Online using the modern ExchangeOnlineManagement v3 module
+    and reports on:
+      - Users with Full Access to other users' mailboxes
+      - Users with Send As rights on other users' mailboxes
+
+    Output is displayed in the console. Pipe to Export-Csv for file output.
+
+.PARAMETER UserPrincipalName
+    The UPN of the admin account used to connect to Exchange Online.
+    Example: admin@contoso.onmicrosoft.com
+
+.EXAMPLE
+    .\ExchangeOnlineGetMailBoxPermissions.ps1 -UserPrincipalName "admin@contoso.onmicrosoft.com"
+
+.NOTES
+    Requires: ExchangeOnlineManagement v3+
+    Install:  Install-Module ExchangeOnlineManagement -Force
+    Author:   blow-tech
+    Version:  2.0 - Migrated from deprecated Basic Auth / remote PSSession to EXO v3
+#>
+
+[CmdletBinding()]
+Param(
+    [Parameter(Mandatory = $true)]
+    [string]$UserPrincipalName
+)
+
+# ── Connect ────────────────────────────────────────────────────────────────────
+Write-Host "[*] Connecting to Exchange Online as $UserPrincipalName..." -ForegroundColor Cyan
+try {
+    Connect-ExchangeOnline -UserPrincipalName $UserPrincipalName -ShowBanner:$false -ErrorAction Stop
+    Write-Host "[+] Connected successfully." -ForegroundColor Green
+}
+catch {
+    Write-Error "[!] Failed to connect to Exchange Online: $_"
+    exit 1
+}
+
+# ── Full Access Permissions ────────────────────────────────────────────────────
+Write-Host "`n[*] Querying Full Access mailbox permissions..." -ForegroundColor Cyan
+try {
+    $fullAccess = Get-Mailbox -ResultSize Unlimited -ErrorAction Stop |
+        Get-MailboxPermission |
+        Where-Object {
+            ($_.AccessRights -match "FullAccess") -and
+            ($_.IsInherited -eq $false) -and
+            -not ($_.User -like "NT AUTHORITY\SELF")
+        } |
+        Select-Object Identity, User, AccessRights
+
+    if ($fullAccess) {
+        Write-Host "`n--- Full Access Permissions ---" -ForegroundColor Yellow
+        $fullAccess | Format-Table -AutoSize
+    }
+    else {
+        Write-Host "[i] No Full Access delegations found." -ForegroundColor Gray
+    }
+}
+catch {
+    Write-Warning "[!] Error querying Full Access permissions: $_"
+}
+
+# ── Send As Permissions ────────────────────────────────────────────────────────
+Write-Host "`n[*] Querying Send As permissions..." -ForegroundColor Cyan
+try {
+    $sendAs = Get-Mailbox -ResultSize Unlimited -ErrorAction Stop |
+        Get-RecipientPermission |
+        Where-Object {
+            ($_.AccessRights -like "*SendAs*") -and
+            -not ($_.Trustee -like "NT AUTHORITY\SELF")
+        } |
+        Select-Object Identity, Trustee, AccessRights
+
+    if ($sendAs) {
+        Write-Host "`n--- Send As Permissions ---" -ForegroundColor Yellow
+        $sendAs | Format-Table -AutoSize
+    }
+    else {
+        Write-Host "[i] No Send As delegations found." -ForegroundColor Gray
+    }
+}
+catch {
+    Write-Warning "[!] Error querying Send As permissions: $_"
+}
+
+# ── Disconnect ─────────────────────────────────────────────────────────────────
+Write-Host "`n[*] Disconnecting from Exchange Online..." -ForegroundColor Cyan
+Disconnect-ExchangeOnline -Confirm:$false
+Write-Host "[+] Done." -ForegroundColor Green
