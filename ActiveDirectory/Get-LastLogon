@@ -1,0 +1,102 @@
+#Requires -Modules ActiveDirectory
+
+<#
+.SYNOPSIS
+    Returns the last logon date and time for all enabled AD user accounts.
+
+.DESCRIPTION
+    Queries Active Directory for all user accounts and returns their last logon
+    date/time using the replicated LastLogonDate attribute (accurate across all DCs).
+
+    Optionally filters by OU via -SearchBase, exports to CSV via -OutputFile,
+    and can include disabled accounts via -IncludeDisabled.
+
+.PARAMETER SearchBase
+    Optional. The DistinguishedName of the OU to search within.
+    Defaults to the entire domain.
+
+.PARAMETER OutputFile
+    Optional. Full path to export results as CSV.
+    Example: "C:\Reports\LastLogon.csv"
+
+.PARAMETER IncludeDisabled
+    Optional switch. If specified, includes disabled user accounts in the results.
+
+.EXAMPLE
+    .\GetUsersLastLogonDateTime.ps1
+
+.EXAMPLE
+    .\GetUsersLastLogonDateTime.ps1 -SearchBase "OU=Staff,DC=contoso,DC=com" -OutputFile "C:\Reports\LastLogon.csv"
+
+.NOTES
+    FIX: Replaced legacy DirectorySearcher + non-replicated 'lastLogon' attribute
+         with Get-ADUser -Properties LastLogonDate (replicated, accurate across all DCs).
+    Author:  blow-tech
+    Version: 2.0
+#>
+
+[CmdletBinding()]
+Param(
+    [Parameter(Mandatory = $false)]
+    [string]$SearchBase,
+
+    [Parameter(Mandatory = $false)]
+    [string]$OutputFile,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$IncludeDisabled
+)
+
+Import-Module ActiveDirectory -ErrorAction Stop
+
+# ── Build Parameters ───────────────────────────────────────────────────────────
+$adParams = @{
+    Filter     = if ($IncludeDisabled) { 'ObjectClass -eq "user"' } else { 'Enabled -eq $true' }
+    Properties = @('DisplayName', 'LastLogonDate', 'SamAccountName', 'Enabled', 'DistinguishedName')
+}
+
+if ($PSBoundParameters.ContainsKey('SearchBase')) {
+    $adParams['SearchBase'] = $SearchBase
+}
+
+# ── Query AD ───────────────────────────────────────────────────────────────────
+Write-Host "[*] Querying Active Directory for user last logon data..." -ForegroundColor Cyan
+
+try {
+    $users = Get-ADUser @adParams -ErrorAction Stop
+    Write-Host "[+] Found $($users.Count) user account(s)." -ForegroundColor Green
+}
+catch {
+    Write-Error "[!] Failed to query Active Directory: $_"
+    exit 1
+}
+
+# ── Build Output ───────────────────────────────────────────────────────────────
+$results = $users | Select-Object `
+    @{ Name = 'DisplayName';      Expression = { $_.DisplayName } },
+    @{ Name = 'SamAccountName';   Expression = { $_.SamAccountName } },
+    @{ Name = 'Enabled';          Expression = { $_.Enabled } },
+    @{ Name = 'LastLogonDate';    Expression = {
+        if ($_.LastLogonDate) { $_.LastLogonDate } else { 'Never Logged On' }
+    }},
+    @{ Name = 'DaysSinceLogon';   Expression = {
+        if ($_.LastLogonDate) {
+            [math]::Round((New-TimeSpan -Start $_.LastLogonDate -End (Get-Date)).TotalDays)
+        } else { 'N/A' }
+    }},
+    DistinguishedName |
+    Sort-Object LastLogonDate -Descending
+
+# ── Display ────────────────────────────────────────────────────────────────────
+$results | Format-Table DisplayName, SamAccountName, Enabled, LastLogonDate, DaysSinceLogon -AutoSize
+
+# ── Export ─────────────────────────────────────────────────────────────────────
+if ($PSBoundParameters.ContainsKey('OutputFile')) {
+    try {
+        $results | Export-Csv -Path $OutputFile -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
+        Write-Host "[+] Report exported to: $OutputFile" -ForegroundColor Green
+    }
+    catch {
+        Write-Error "[!] Failed to write output file: $_"
+    }
+}
