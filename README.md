@@ -1,175 +1,171 @@
-# 🛠️ PowerShell Admin Toolkit
-
-> A production-ready collection of PowerShell scripts for Windows Server, Active Directory, Exchange Online, and Microsoft 365 administration.
+# PowerShell Admin Toolkit
 
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue?logo=powershell)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20Server%202016%2B-lightgrey?logo=windows)
-![M365](https://img.shields.io/badge/Microsoft%20365-Exchange%20%7C%20Intune-0078D4?logo=microsoft)
+![M365](https://img.shields.io/badge/Microsoft%20365-Exchange%20%7C%20Entra%20%7C%20Intune-0078D4?logo=microsoft)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Last Commit](https://img.shields.io/github/last-commit/blow-tech/powershell-admin-toolkit)
 
----
-
-## 📋 Overview
-
-This toolkit automates repetitive admin tasks, enforces consistency across environments, and provides fast reporting across:
-
-- **Active Directory** — account lifecycle, auditing, expiry management
-- **Exchange Online** — mailbox reporting, permissions, mail flow tracing
-- **Environment Health** — AD replication, DNS, disk, certs, services in one report
-- **Backup** — AD state backup automation
-- **Inventory & Cleanup** — system info collection, disk hygiene
-
-All scripts follow a consistent structure: full comment-based help, parameter validation, error handling, and console + log output.
+Production PowerShell scripts for Windows Server, Active Directory, Exchange Online, and Microsoft 365 administration. Built from real incidents and daily operations — not tutorial code.
 
 ---
 
-## 📁 Repository Structure
+## Overview
+
+| Domain | Coverage |
+|---|---|
+| Active Directory | Account lifecycle, lockout tracing, logon auditing, expiry management, MFA status, risky users |
+| Exchange Online | Mailbox permissions, distribution group membership, shared mailbox reporting, mail flow auditing, PIM role audit |
+| Microsoft Entra | MFA registration gaps, risky user detection, break glass account reporting, sign-in failure analysis |
+| Environment Health | AD replication, DNS, disk, certificates, services — single HTML report output |
+| Backup | AD state backup automation |
+| Inventory | System info collection, environment audit |
+
+All scripts include comment-based help (accessible via `Get-Help`), parameter validation, and error handling.
+
+---
+
+## Repository Structure
 
 ```
 powershell-admin-toolkit/
 ├── ActiveDirectory/
-│   ├── Get-ExpiringAccounts_Report.ps1     # Find accounts with expiring passwords
-│   ├── Get-LastLogon.ps1                   # Last logon report across all DCs
-│   ├── Get-LockedOutLocation.ps1           # Trace lockout source from Security logs
-│   ├── GetUsersLogonLogoffEvents.ps1       # Logon/logoff event audit
-│   └── Send-PasswordExpiry.ps1             # Email users before password expires
+│   ├── Environment Health-Check.ps1              # AD, DNS, disk, cert, service health — HTML report
+│   ├── Get-ExpiringAccounts_Report.ps1           # Accounts with passwords expiring within N days
+│   ├── Get-LastLogon.ps1                         # Last logon per user queried across all DCs
+│   ├── Get-LockedOutLocation.ps1                 # Lockout source from Security event 4740
+│   ├── GetUsersLogonLogoffEvents.ps1             # Logon/logoff event audit
+│   ├── Get_MFA_Status.ps1                        # MFA registration status via Graph API
+│   ├── Manage Active Directory Groups.ps1        # Bulk group membership management
+│   ├── Risky Users Report in Microsoft Entra.ps1 # Entra ID Protection risky user report
+│   └── Send-PasswordExpiry.ps1                   # Email notifications before password expiry
 │
 ├── ExchangeOnline/
-│   ├── Get-DistributionGroupMember.ps1     # Export DL membership
-│   ├── Get-MailboxPermissions.ps1          # Full/Send-As/Send-on-Behalf audit
-│   ├── Shared Mailbox Size Report.ps1      # Size + quota report for shared mailboxes
-│   └── Trace Emails Sent to External Domains.ps1  # Mail flow security audit
+│   ├── Audit PIM role.ps1                        # Privileged Identity Management role audit
+│   ├── Get-DistributionGroupMember.ps1           # Distribution list membership export
+│   ├── Get-MailboxPermissions.ps1                # Full Access, Send-As, Send on Behalf audit
+│   ├── Shared Mailbox Size Report.ps1            # Size, item count, and quota per shared mailbox
+│   └── Trace Emails Sent to External Domains.ps1 # Outbound external mail flow audit
 │
 ├── backup/
-│   └── ADBackUp.ps1                        # Active Directory state backup
+│   └── ADBackUp.ps1                              # Active Directory state backup
 │
 └── scripts/
-    ├── cleanup/
-    │   └── DiskCleanup.ps1                 # Automated disk space reclamation
+    ├── cleanup/                                  # Disk space reclamation
     ├── inventory/
-    │   ├── Audit.ps1                       # Environment audit report
-    │   └── Get-SystemInfo.ps1              # Full Windows system info snapshot
-    └── Get-EnvironmentHealthCheck.ps1      # ⭐ Full environment health check + HTML report
+    │   ├── Audit.ps1                             # Environment audit report
+    │   ├── Break Glass Account Report.ps1        # Break glass account access audit
+    │   ├── Get-SystemInfo.ps1                    # Windows system info snapshot
+    │   └── Send Password Expiry Notifications to M365 Users.ps1
+    ├── M365 Sign-in Failure Report.ps1           # Failed sign-in analysis from Entra logs
+    └── README.md
 ```
 
 ---
 
-## ⚡ Quick Start
+## Prerequisites
 
-### Prerequisites
+**Active Directory scripts** require a domain-joined machine with RSAT installed, or execution directly on a domain controller.
+
+**Exchange Online and Entra ID scripts** require the relevant modules and an authenticated session before running.
 
 ```powershell
-# Required modules — install once
-Install-Module -Name ActiveDirectory          -Scope CurrentUser   # Built-in on DC/RSAT
+# Exchange Online
 Install-Module -Name ExchangeOnlineManagement -Scope CurrentUser
-Install-Module -Name Microsoft.Graph          -Scope CurrentUser   # For Graph-based scripts
+Connect-ExchangeOnline
+
+# Microsoft Graph (MFA status, risky users, Entra reports)
+Install-Module -Name Microsoft.Graph -Scope CurrentUser
+Connect-MgGraph -Scopes "UserAuthenticationMethod.Read.All","IdentityRiskyUser.Read.All","AuditLog.Read.All"
 ```
 
-> **Note:** Scripts that touch AD must be run on a Domain Controller or a machine with RSAT installed. Exchange Online scripts require an active `Connect-ExchangeOnline` session.
-
-### Clone & Run
-
-```powershell
-git clone https://github.com/blow-tech/powershell-admin-toolkit.git
-cd powershell-admin-toolkit
-
-# Example: Run the environment health check
-.\scripts\Get-EnvironmentHealthCheck.ps1 -OutputPath "C:\Reports"
-```
+> The `ActiveDirectory` module is not available on PSGallery. Install it via RSAT on Windows Server or enable it through Windows Optional Features on a management workstation.
 
 ---
 
-## 🔍 Script Reference
+## Script Reference
 
-### 🏥 Get-EnvironmentHealthCheck.ps1
-**The flagship script.** Runs automated checks across your entire environment and outputs a timestamped HTML dashboard report.
+### Environment Health Check
 
-**Checks performed:**
-| Area | What's checked |
+**`ActiveDirectory/Environment Health-Check.ps1`**
+
+The primary operational script. Runs automated checks across the environment and outputs a timestamped HTML report.
+
+| Area | What is checked |
 |---|---|
-| Active Directory | Replication failures, replication queue |
-| DNS | SRV record resolution, forwarder health, external DNS |
+| Active Directory | Replication failures, replication queue depth |
+| DNS | SRV record resolution, forwarder health, external resolution |
 | Disk | Free space on all fixed drives (configurable threshold) |
-| Services | Critical services: NTDS, DNS, Netlogon, KDC, DFSR, W32Time, WinRM |
+| Services | NTDS, DNS, Netlogon, KDC, DFSR, W32Time, WinRM |
 | Certificates | Expiry warnings from LocalMachine\My store |
 | Shares | SYSVOL and NETLOGON availability |
-| DC Connectivity | Ping + LDAP port 389 per domain controller |
-| Event Logs | Error/warning counts from System + Application (last 24h) |
+| DC Connectivity | Ping and LDAP port 389 per domain controller |
+| Event Logs | Error and warning counts from System and Application logs (last 24h) |
 
 ```powershell
-# Basic run — saves HTML report to script directory
-.\Get-EnvironmentHealthCheck.ps1
+# Default run — HTML report saved to script directory
+.\Environment Health-Check.ps1
 
 # Custom thresholds
-.\Get-EnvironmentHealthCheck.ps1 -DiskThresholdPercent 15 -CertWarningDays 45 -OutputPath "C:\Reports"
+.\Environment Health-Check.ps1 -DiskThresholdPercent 15 -CertWarningDays 45 -OutputPath "C:\Reports"
 
 # Email report on completion
-.\Get-EnvironmentHealthCheck.ps1 -SendEmail -SmtpServer "smtp.domain.local" `
+.\Environment Health-Check.ps1 -SendEmail -SmtpServer "smtp.domain.local" `
     -EmailFrom "healthcheck@domain.local" -EmailTo "it-team@domain.local"
 ```
 
 ---
 
-### 👤 ActiveDirectory Scripts
+### Active Directory
 
-| Script | Description | Key Output |
+| Script | Description | Output |
 |---|---|---|
-| `Get-ExpiringAccounts_Report` | Finds accounts with passwords expiring within N days | CSV / console |
-| `Get-LastLogon` | Queries all DCs and returns the most recent logon per user | CSV |
-| `Get-LockedOutLocation` | Reads Security event 4740 to find lockout source | Console |
-| `GetUsersLogonLogoffEvents` | Pulls logon/logoff events for audit trail | Console / CSV |
-| `Send-PasswordExpiry` | Emails users a warning before their password expires | Email |
+| `Get-ExpiringAccounts_Report` | Accounts with passwords expiring within N days | CSV |
+| `Get-LastLogon` | Most recent logon per user, queried across all DCs | CSV |
+| `Get-LockedOutLocation` | Source machine from Security event ID 4740 | Console |
+| `GetUsersLogonLogoffEvents` | Logon and logoff event audit trail | CSV |
+| `Get_MFA_Status` | MFA method registration status per user via Graph | CSV |
+| `Manage Active Directory Groups` | Bulk add, remove, or report on group membership | CSV |
+| `Risky Users Report in Microsoft Entra` | Entra ID Protection risk level and state per user | CSV |
+| `Send-PasswordExpiry` | Email notifications to users before password expires | Email |
+
+See [ActiveDirectory/README.md](ActiveDirectory/README.md) for full parameter reference and usage examples.
 
 ---
 
-### 📧 Exchange Online Scripts
+### Exchange Online
 
-| Script | Description | Key Output |
+| Script | Description | Output |
 |---|---|---|
-| `Get-DistributionGroupMember` | Exports all members of a DL or all DLs | CSV |
-| `Get-MailboxPermissions` | Audits Full Access, Send-As, Send on Behalf | CSV |
-| `Shared Mailbox Size Report` | Reports size, item count, and quota usage | CSV / Console |
-| `Trace Emails Sent to External Domains` | Security audit of outbound external mail flow | Console |
+| `Audit PIM role` | Active and eligible PIM role assignment audit | CSV |
+| `Get-DistributionGroupMember` | Membership export for one or all distribution lists | CSV |
+| `Get-MailboxPermissions` | Full Access, Send-As, and Send on Behalf per mailbox | CSV |
+| `Shared Mailbox Size Report` | Size, item count, and quota status per shared mailbox | CSV |
+| `Trace Emails Sent to External Domains` | Outbound external mail flow security audit | Console |
 
 ---
 
-## 🔒 Security & Best Practices
+### Inventory and Reporting
 
-- **Least Privilege** — Scripts specify the minimum required permissions in their `.NOTES` section
-- **No hardcoded credentials** — All scripts use `-Credential` parameters or existing authenticated sessions
-- **Read-only by default** — Reporting scripts never modify data unless you use an explicit `-WhatIf`-supporting action parameter
-- **Transcript logging** — Where applicable, scripts support `-LogPath` for audit trails
-
----
-
-## 🗺️ Roadmap
-
-- [ ] `Security/Get-AdminAccounts.ps1` — Privileged account audit
-- [ ] `Security/Audit-LocalAdmins.ps1` — Local admin enumeration across servers
-- [ ] `Intune/Get-ManagedDevices.ps1` — Device compliance report via Graph API
-- [ ] `Certificates/Get-ExpiringCerts.ps1` — Enterprise CA certificate expiry sweep
-- [ ] `Reporting/` — HTML report wrappers for existing scripts
+| Script | Description | Output |
+|---|---|---|
+| `Break Glass Account Report` | Access and activity audit for break glass accounts | CSV |
+| `Get-SystemInfo` | Hardware, OS, network, and role snapshot | Console / CSV |
+| `Audit.ps1` | Broad environment audit across key config areas | Console |
+| `M365 Sign-in Failure Report` | Failed sign-in analysis pulled from Entra audit logs | CSV |
+| `Send Password Expiry Notifications to M365 Users` | M365-native password expiry notification | Email |
 
 ---
 
-## 🤝 Contributing
+## Security Notes
 
-Pull requests are welcome. For major changes, please open an issue first.
-
-1. Fork the repo
-2. Create a feature branch: `git checkout -b feature/script-name`
-3. Follow the existing comment-based help header format
-4. Submit a PR with a clear description of what the script does and what permissions it requires
+- Scripts specify minimum required permissions in their `.NOTES` section
+- No hardcoded credentials — scripts use `-Credential` parameters or existing authenticated sessions
+- Reporting scripts are read-only by default and do not modify AD or mailbox data
+- Graph-based scripts use delegated or application permissions scoped to the minimum required
 
 ---
 
-## 📄 License
+## License
 
-[MIT](LICENSE) — free to use, modify, and distribute with attribution.
-
----
-
-<div align="center">
-  <sub>Built for sysadmins, by a sysadmin &nbsp;·&nbsp; <a href="https://github.com/blow-tech">blow-tech</a></sub>
-</div>
+[MIT](LICENSE)
