@@ -1,0 +1,25 @@
+# Name the server where this needs to be run
+$ServerName = 'localhost'
+
+# Get all volumes on the server
+$Volumes = Get-WmiObject -Namespace "root/cimv2" -ComputerName $ServerName -Class Win32_Volume |
+Where-Object { $_.Capacity -gt 0 -and ($_.DriveType -eq 2 -or $_.DriveType -eq 3) }
+
+# Create custom properties
+$TCapacity = @{
+    Expression = { "{0,19:n2}" -f ($_.Capacity / 1GB) }
+    Name       = 'Total Capacity (GB)'
+}
+
+$Freespace = @{
+    Expression = { "{0,15:n2}" -f ($_.FreeSpace / 1GB) }
+    Name       = 'Free Space (GB)'
+}
+
+$PercentFree = @{
+    Expression = { [int]($_.Freespace * 100 / $_.Capacity) }
+    Name       = 'Free (%)'
+}
+
+# Display the formatted data
+$Volumes | Select-Object -Property Name, $TCapacity, $Freespace, $PercentFree | Sort-Object -Property 'Free (%)' -Descending
