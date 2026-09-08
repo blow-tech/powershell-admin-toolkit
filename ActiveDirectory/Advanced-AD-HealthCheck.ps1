@@ -539,11 +539,11 @@ $TotalChecks = @($Results).Count
 $OverallStatus = if ($FailCount -gt 0) { "FAIL" } elseif ($WarnCount -gt 0) { "WARN" } else { "PASS" }
 
 $Recommendations = $Results |
-    Where-Object { $_.Status -in @("WARN","FAIL") } |
+    Where-Object { $_.Status -in @("WARN","FAIL","UNKNOWN","ERROR") } |
     Select-Object Category, Check, Target, Status, Recommendation
 
 $TopFindings = $Results |
-    Where-Object { $_.Status -in @("FAIL","WARN") } |
+    Where-Object { $_.Status -in @("FAIL","WARN","UNKNOWN","ERROR") } |
     Select-Object -First 15 Category, Check, Target, Status, Details, Recommendation
 
 $css = @"

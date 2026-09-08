@@ -32,4 +32,6 @@ Before deployment, record the currently deployed revision, scheduled task argume
 
 Review-derived scripts include community contributions; their original sources and attribution remain in repository history. This patch supersedes older README claims where the older documentation described unimplemented parameters or safeguards.
 
-Windows CI also identified UTF-8-without-BOM parsing failures in the existing GetUsersLogonLogoffEvents and AD_Monitoring sources under Windows PowerShell 5.1. Those files, and touched Unicode PowerShell files, now use UTF-8 with BOM; the two additional sources received encoding-only changes.
+Windows CI also identified UTF-8-without-BOM parsing failures in the existing GetUsersLogonLogoffEvents and AD_Monitoring sources under Windows PowerShell 5.1. GetUsersLogonLogoffEvents and touched Unicode PowerShell files now use UTF-8 with BOM. AD_Monitoring is now a compatibility wrapper around the maintained health collector, removing its duplicate false-green logic and hard-coded email delivery; migrate its schedule to an explicit -ReportPath.
+
+Final review also corrected device filtering to return from each pipeline callback instead of using a loop-only continue statement, and includes UNKNOWN/ERROR in executive findings lists.

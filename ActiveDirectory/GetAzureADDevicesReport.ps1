@@ -123,12 +123,12 @@ Get-MgDevice -All | ForEach-Object {
     }
 
     if($DevicesWithBitLockerKey.IsPresent) {
-        if($BitLockerKeyIsPresent -eq "No") { Continue }
+        if($BitLockerKeyIsPresent -eq "No") { return }
     }
 
     if($InactiveDays -ne "") {
-        if(($_.ApproximateLastSignInDateTime -eq $null)) { Continue }
-        if($LastSigninActivity -le $InactiveDays) { continue }
+        if(($_.ApproximateLastSignInDateTime -eq $null)) { return }
+        if($LastSigninActivity -le $InactiveDays) { return }
     }
 
     $SerialNumber = ""

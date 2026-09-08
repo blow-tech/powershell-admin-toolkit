@@ -117,6 +117,26 @@ try {
     try { & $cleanup -AllowedPath $allowed -Execute -ManifestPath $manifest -ManifestSha256 $digest -Confirm:$false } catch { $failed=$true }
     Assert ($failed -and (Test-Path -LiteralPath $candidate)) 'Stale manifest must fail before deletion.'
     Write-Output 'PASS: cleanup inventory, protected fixture, WhatIf and stale-manifest checks.'
+    function Get-MgContext { [pscustomobject]@{TenantId='33333333-3333-3333-3333-333333333333';AuthType='AppOnly';Scopes=@()} }
+    function Get-MgDeviceManagementManagedDevice { @() }
+    function Get-MgDevice {
+        [pscustomobject]@{Id='first';DeviceId='44444444-4444-4444-4444-444444444444';DisplayName='Excluded';IsManaged=$false;AccountEnabled=$true}
+        [pscustomobject]@{Id='second';DeviceId='55555555-5555-5555-5555-555555555555';DisplayName='Included';IsManaged=$false;AccountEnabled=$true}
+    }
+    function Get-MgInformationProtectionBitlockerRecoveryKey {
+        param($Filter)
+        if ($Filter -like '*55555555*') { [pscustomobject]@{Id='metadata-only'} }
+    }
+    Push-Location $temp
+    try {
+        & (Join-Path $root 'ActiveDirectory/GetAzureADDevicesReport.ps1') -TenantId '33333333-3333-3333-3333-333333333333' -DevicesWithBitLockerKey
+        $deviceCsv=@(Get-ChildItem -LiteralPath $temp -Filter 'EntraDevicesReport_*.csv')
+        Assert ($deviceCsv.Count -eq 1) 'Device report must publish after filtering earlier rows.'
+        $deviceRows=@(Import-Csv -LiteralPath $deviceCsv[0].FullName)
+        Assert ($deviceRows.Count -eq 1 -and $deviceRows[0].Name -eq 'Included') 'Skipping a device must not terminate the reporting pipeline.'
+    } finally { Pop-Location }
+    Write-Output 'PASS: device filter continuation with mocked Graph responses.'
+
 } finally {
     # Only this test-created directory is removed, never a repository or host data path.
     Remove-Item -LiteralPath $temp -Recurse -Force
