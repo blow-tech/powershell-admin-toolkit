@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Advanced Active Directory Health Check Report
     Saves to: C:\AD-Monitoring\

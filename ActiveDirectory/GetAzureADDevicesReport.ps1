@@ -1,4 +1,4 @@
-<#
+﻿<#
 =============================================================================================
 Name:           Export Entra Device Report using MS Graph PowerShell
 Description:    This script exports all Microsoft 365 devices to CSV

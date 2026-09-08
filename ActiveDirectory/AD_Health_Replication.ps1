@@ -1,4 +1,4 @@
-<#
+﻿<#
     .SYNOPSIS
     Get-ADHealth.ps1 - Active Directory Health Check Script.
 

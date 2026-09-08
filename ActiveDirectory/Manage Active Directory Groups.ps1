@@ -1,4 +1,4 @@
-<#
+﻿<#
 =============================================================================================
 Name:        Manage Active Directory Groups Using PowerShell Script
 Description: This script helps you perform 16 Active Directory group management actions, including both single and bulk operations, to save time and reduce manual effort. 
@@ -117,7 +117,7 @@ function Exit-Script {
     Write-Host `n~~ Script prepared by Admindroid Community ~~`n -ForegroundColor Green
     Write-Host "~~ Check out " -NoNewline -ForegroundColor Green; Write-Host "admindroid.com" -ForegroundColor Yellow -NoNewline; Write-Host " to access 450+ insightful reports and 70+ management actions across your Active Directory environment. ~~" -ForegroundColor Green `n
     
-    if ($Exit.IsPresent) { if (-not $script:AllSuccess) { throw "One or more AD operations failed. Review the log." }; return }
+    if ($Exit.IsPresent) { if (-not $script:AllSuccess) { throw "One or more AD operations failed. Review the log." }; exit 0 }
 }
 
 function New-ADGroupCustom {

@@ -31,3 +31,5 @@ The GitHub workflow runs Windows PowerShell 5.1 and PowerShell 7 on disposable W
 Before deployment, record the currently deployed revision, scheduled task arguments, execution identity, target scope and recovery requirements. Stage the scripts in a separate directory and run previews in a lab. Change the scheduled entry point only through a separately approved rollout. Roll back the script deployment by returning to the previous pinned revision and arguments; do not restore unsafe cleanup/backup behavior into unattended schedules. Actual directory/mailbox/credential changes require their own operation-specific recovery plan.
 
 Review-derived scripts include community contributions; their original sources and attribution remain in repository history. This patch supersedes older README claims where the older documentation described unimplemented parameters or safeguards.
+
+Windows CI also identified UTF-8-without-BOM parsing failures in the existing GetUsersLogonLogoffEvents and AD_Monitoring sources under Windows PowerShell 5.1. Those files, and touched Unicode PowerShell files, now use UTF-8 with BOM; the two additional sources received encoding-only changes.

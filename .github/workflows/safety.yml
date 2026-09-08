@@ -12,5 +12,6 @@ jobs:
         shell: powershell
         run: ./tests/Validate-Scripts.ps1
       - name: PowerShell 7 parser and mocked regressions
+        if: always()
         shell: pwsh
         run: ./tests/Validate-Scripts.ps1
