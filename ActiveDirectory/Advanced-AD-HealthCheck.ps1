@@ -20,7 +20,7 @@ param(
     [switch]$OpenReport
 )
 
-$ErrorActionPreference = "SilentlyContinue"
+$ErrorActionPreference = "Stop"
 
 function Write-Section {
     param([string]$Message)
@@ -37,6 +37,8 @@ function Get-SeverityFromStatus {
         "PASS" { "pass" }
         "WARN" { "warn" }
         "FAIL" { "fail" }
+        "UNKNOWN" { "warn" }
+        "ERROR" { "fail" }
         default { "info" }
     }
 }
@@ -103,47 +105,53 @@ function ConvertTo-HtmlTable {
     return $html
 }
 
+function Invoke-Collection {
+    param([scriptblock]$ScriptBlock,[switch]$AllowNoEvents)
+    try {
+        $ErrorActionPreference='Stop'
+        $data=@(& $ScriptBlock)
+        [pscustomobject]@{Succeeded=$true;Data=$data;Error=$null}
+    } catch {
+        if ($AllowNoEvents -and $_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') {
+            return [pscustomobject]@{Succeeded=$true;Data=@();Error=$null}
+        }
+        [pscustomobject]@{Succeeded=$false;Data=@();Error=$_.Exception.Message}
+    }
+}
 function Invoke-CommandSafe {
     param([scriptblock]$ScriptBlock)
-    try { & $ScriptBlock } catch { $null }
+    $collection=Invoke-Collection $ScriptBlock
+    if (-not $collection.Succeeded) {
+        $Results.Add((New-ResultObject -Category 'Collection' -Check 'Query failed' -Target $DomainName -Status 'UNKNOWN' -Details $collection.Error))
+        return $null
+    }
+    $collection.Data
 }
-
 function Get-CommandTextOutput {
-    param([string]$Command, [string]$Arguments)
-
+    param([string]$Command,[string]$Arguments,[ValidateRange(1,300)][int]$TimeoutSeconds=60)
+    $p=$null
     try {
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = $Command
-        $psi.Arguments = $Arguments
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        $psi.UseShellExecute = $false
-        $psi.CreateNoWindow = $true
-
-        $p = New-Object System.Diagnostics.Process
-        $p.StartInfo = $psi
-        [void]$p.Start()
-        $stdout = $p.StandardOutput.ReadToEnd()
-        $stderr = $p.StandardError.ReadToEnd()
-        $p.WaitForExit()
-
-        [PSCustomObject]@{
-            ExitCode = $p.ExitCode
-            StdOut   = $stdout.Trim()
-            StdErr   = $stderr.Trim()
+        $psi=New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName=$Command; $psi.Arguments=$Arguments
+        $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
+        $psi.UseShellExecute=$false; $psi.CreateNoWindow=$true
+        $p=New-Object System.Diagnostics.Process
+        $p.StartInfo=$psi
+        $null=$p.Start()
+        $stdout=$p.StandardOutput.ReadToEndAsync()
+        $stderr=$p.StandardError.ReadToEndAsync()
+        if (-not $p.WaitForExit($TimeoutSeconds*1000)) {
+            $p.Kill(); $null=$p.WaitForExit(5000)
+            throw "Diagnostic command timed out after $TimeoutSeconds seconds."
         }
-    }
-    catch {
-        [PSCustomObject]@{
-            ExitCode = 999
-            StdOut   = ""
-            StdErr   = $_.Exception.Message
-        }
-    }
+        if (-not $stdout.Wait(5000) -or -not $stderr.Wait(5000)) { throw 'Diagnostic output stream did not close.' }
+        [pscustomobject]@{ExitCode=$p.ExitCode;StdOut=$stdout.Result.Trim();StdErr=$stderr.Result.Trim()}
+    } catch { [pscustomobject]@{ExitCode=999;StdOut='';StdErr=$_.Exception.Message} }
+    finally { if ($null -ne $p) { $p.Dispose() } }
 }
 
 # Load required modules
-Import-Module ActiveDirectory -ErrorAction SilentlyContinue
+Import-Module ActiveDirectory -ErrorAction Stop
 
 Write-Section "Starting Advanced Active Directory Health Check"
 
@@ -203,9 +211,10 @@ $DomainControllers = Invoke-CommandSafe { Get-ADDomainController -Filter * -Serv
 
 if ($DomainControllers) {
     foreach ($dc in $DomainControllers) {
-        $boot = Invoke-CommandSafe { (Get-CimInstance -ClassName Win32_OperatingSystem -ComputerName $dc.HostName).LastBootUpTime }
-        $os = Invoke-CommandSafe { (Get-CimInstance -ClassName Win32_OperatingSystem -ComputerName $dc.HostName).Caption }
-        $ip = Invoke-CommandSafe { (Resolve-DnsName $dc.HostName -Type A -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty IPAddress) }
+        $osSnapshot = Invoke-CommandSafe { Get-CimInstance -ClassName Win32_OperatingSystem -ComputerName $dc.HostName -ErrorAction Stop }
+        $boot = $osSnapshot.LastBootUpTime
+        $os = $osSnapshot.Caption
+        $ip = Invoke-CommandSafe { (Resolve-DnsName $dc.HostName -Type A -ErrorAction Stop | Select-Object -First 1 -ExpandProperty IPAddress) }
 
         $DCInventory += [PSCustomObject]@{
             HostName         = $dc.HostName
@@ -345,8 +354,13 @@ else {
     $Results.Add((New-ResultObject -Category "Replication" -Check "repadmin /replsummary" -Target $DomainName -Status "FAIL" -Details $replSummary.StdErr -Recommendation "Ensure repadmin is installed and run with required permissions."))
 }
 
-$AdReplFailures = Invoke-CommandSafe { Get-ADReplicationFailure -Target * -Scope Forest }
-if ($AdReplFailures) {
+$replCollection = Invoke-Collection { Get-ADReplicationFailure -Target * -Scope Forest -ErrorAction Stop }
+$AdReplFailures = $replCollection.Data
+if (-not $replCollection.Succeeded) {
+    $Results.Add((New-ResultObject -Category 'Replication' -Check 'AD Replication Failure' -Target $DomainName -Status 'UNKNOWN' -Details $replCollection.Error))
+    $ReplicationResults += [pscustomobject]@{Server=$DomainName;FirstFailureTime='';FailureCount=$null;Partner='';Status='UNKNOWN';Details=$replCollection.Error}
+}
+elseif ($AdReplFailures) {
     foreach ($failure in $AdReplFailures) {
         $ReplicationResults += [PSCustomObject]@{
             Server           = $failure.Server
@@ -422,16 +436,16 @@ Write-Section "Checking Event Logs"
 $CriticalLogNames = @("Directory Service","DNS Server","System","DFS Replication")
 foreach ($dc in $DomainControllers) {
     foreach ($logName in $CriticalLogNames) {
-        $events = Invoke-CommandSafe {
+        $eventCollection = Invoke-Collection -AllowNoEvents -ScriptBlock {
             Get-WinEvent -ComputerName $dc.HostName -FilterHashtable @{
                 LogName   = $logName
                 Level     = 1,2,3
                 StartTime = (Get-Date).AddDays(-1)
-            } -MaxEvents 50
+            } -ErrorAction Stop
         }
 
-        $count = @($events).Count
-        $status = if ($count -eq 0) { "PASS" } elseif ($count -le 10) { "WARN" } else { "FAIL" }
+        $count = if ($eventCollection.Succeeded) { @($eventCollection.Data).Count } else { $null }
+        $status = if (-not $eventCollection.Succeeded) { "UNKNOWN" } elseif ($count -eq 0) { "PASS" } elseif ($count -le 10) { "WARN" } else { "FAIL" }
 
         $EventSummary += [PSCustomObject]@{
             DomainController = $dc.HostName
@@ -440,7 +454,7 @@ foreach ($dc in $DomainControllers) {
             Status           = $status
         }
 
-        $detail = "$count warning/error/critical events in last 24 hours from log '$logName'."
+        $detail = if ($eventCollection.Succeeded) { "$count warning/error/critical events in last 24 hours from log '$logName'." } else { $eventCollection.Error }
         $recommendation = "Review recurring event IDs, correlate with replication, DNS, DFSR, and service failures."
 
         $Results.Add((New-ResultObject -Category "Events" -Check $logName -Target $dc.HostName -Status $status -Details $detail -Recommendation $recommendation))
@@ -518,8 +532,8 @@ else {
 Write-Section "Generating Summary"
 
 $PassCount = @($Results | Where-Object Status -eq "PASS").Count
-$WarnCount = @($Results | Where-Object Status -eq "WARN").Count
-$FailCount = @($Results | Where-Object Status -eq "FAIL").Count
+$WarnCount = @($Results | Where-Object Status -in "WARN","UNKNOWN").Count
+$FailCount = @($Results | Where-Object Status -in "FAIL","ERROR").Count
 $TotalChecks = @($Results).Count
 
 $OverallStatus = if ($FailCount -gt 0) { "FAIL" } elseif ($WarnCount -gt 0) { "WARN" } else { "PASS" }

@@ -1,3 +1,5 @@
+> September 2026 safety migration: read [REMEDIATION-2026-09.md](REMEDIATION-2026-09.md) before updating scheduled scripts. These are lab-validation candidates, not a blanket production-safety guarantee.
+
 # PowerShell Admin Toolkit
 
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue?logo=powershell)

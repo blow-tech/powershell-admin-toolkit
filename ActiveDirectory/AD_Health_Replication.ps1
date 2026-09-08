@@ -171,6 +171,17 @@ $smtpsettings = @{
 #...................................
 
 # This function gets all the domains in the forest.
+$script:OsSnapshotCache=@{}
+function Get-CachedOperatingSystem {
+ param([string]$ComputerName)
+ if (-not $script:OsSnapshotCache.ContainsKey($ComputerName)) {
+  $os=Get-CimInstance -ClassName Win32_OperatingSystem -ComputerName $ComputerName -ErrorAction Stop
+  if ($null -eq $os) { throw 'OS query returned no result.' }
+  $script:OsSnapshotCache[$ComputerName]=$os
+ }
+ $script:OsSnapshotCache[$ComputerName]
+}
+
 Function Get-AllDomains() {
     $allDomains = (Get-ADForest).Domains
     return $allDomains
@@ -213,7 +224,7 @@ Function Get-DomainControllerUpTime($ComputerName, $IsReachable) {
 
     if ($IsReachable) {
         try {
-            $W32OS = Get-CimInstance -ClassName Win32_OperatingSystem -ComputerName $ComputerName -ErrorAction Stop
+            $W32OS = Get-CachedOperatingSystem -ComputerName $ComputerName
             $bootTime = $W32OS.LastBootUpTime
             $uptime = (Get-Date) - $bootTime
             $result.Hours = [math]::Round($uptime.TotalHours)
@@ -584,7 +595,7 @@ Function Get-DomainControllerOSDriveFreeSpace ($ComputerName, $IsReachable) {
     $percentFree = 'Unreachable'
     if ($IsReachable) {
         try {
-            $os = Get-CimInstance -ClassName Win32_OperatingSystem -ComputerName $ComputerName -ErrorAction Stop
+            $os = Get-CachedOperatingSystem -ComputerName $ComputerName
             $driveLetter = $os.SystemDrive
             $disk = Get-CimInstance -ClassName Win32_LogicalDisk -ComputerName $ComputerName -Filter "DeviceID='$driveLetter'" -ErrorAction Stop
             if ($disk.Size -gt 0) {
@@ -603,7 +614,7 @@ Function Get-DomainControllerOSDriveFreeSpaceGB ($ComputerName, $IsReachable) {
     $freeGB = 'Unreachable'
     if ($IsReachable) {
         try {
-            $os = Get-CimInstance -ClassName Win32_OperatingSystem -ComputerName $ComputerName -ErrorAction Stop
+            $os = Get-CachedOperatingSystem -ComputerName $ComputerName
             $driveLetter = $os.SystemDrive
             $disk = Get-CimInstance -ClassName Win32_LogicalDisk -ComputerName $ComputerName -Filter "DeviceID='$driveLetter'" -ErrorAction Stop
             if ($disk.FreeSpace -gt 0) {
@@ -627,7 +638,7 @@ Function Get-DomainControllerMemoryInfo($ComputerName, $IsReachable) {
 
     if ($IsReachable) {
         try {
-            $os = Get-CimInstance -ClassName Win32_OperatingSystem -ComputerName $ComputerName -ErrorAction Stop
+            $os = Get-CachedOperatingSystem -ComputerName $ComputerName
             # TotalVisibleMemorySize and FreePhysicalMemory are in KB; convert to GB.
             # FreePhysicalMemory can include standby cache and exceed TotalVisibleMemorySize,
             # so cap it to avoid reporting more than 100% free.
@@ -844,33 +855,13 @@ Function Get-LDAPBindTime($ComputerName, $IsReachable) {
 
 # This function returns a count of Warning, Error, and Critical events from the System log in the last 8 hours
 Function Get-EventSummaryLast8h($ComputerName, $IsReachable) {
-    # Check if computer is unreachable
-    if (-not $IsReachable) {
-        return @{ Warning = "Unreachable"; Error = "Unreachable"; Critical = "Unreachable" }
-    }
-
-    # Initialize empty hashtable without default 0s
-    $result = @{}
-
-    # Computer is reachable, query events
+    if (-not $IsReachable) { return @{Warning='Unreachable';Error='Unreachable';Critical='Unreachable'} }
     try {
-        $result.Warning = (Get-WinEvent -ComputerName $ComputerName -FilterHashtable @{
-                LogName = 'System'; Level = 3; StartTime = (Get-Date).AddHours(-8)
-            } -ErrorAction SilentlyContinue | Measure-Object).Count
-
-        $result.Error = (Get-WinEvent -ComputerName $ComputerName -FilterHashtable @{
-                LogName = 'System'; Level = 2; StartTime = (Get-Date).AddHours(-8)
-            } -ErrorAction SilentlyContinue | Measure-Object).Count
-
-        $result.Critical = (Get-WinEvent -ComputerName $ComputerName -FilterHashtable @{
-                LogName = 'System'; Level = 1; StartTime = (Get-Date).AddHours(-8)
-            } -ErrorAction SilentlyContinue | Measure-Object).Count
-    }
-    catch {
-        return @{ Warning = "Error"; Error = "Error"; Critical = "Error" }
-    }
-
-    return $result
+        $events=@()
+        try { $events=@(Get-WinEvent -ComputerName $ComputerName -FilterHashtable @{LogName='System';Level=1,2,3;StartTime=(Get-Date).AddHours(-8)} -ErrorAction Stop) }
+        catch { if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') { throw } }
+        return @{ Warning=@($events | Where-Object Level -eq 3).Count; Error=@($events | Where-Object Level -eq 2).Count; Critical=@($events | Where-Object Level -eq 1).Count }
+    } catch { return @{Warning='UNKNOWN';Error='UNKNOWN';Critical='UNKNOWN'} }
 }
 
 # This function returns the number of pending inbound replication operations using repadmin
@@ -1095,11 +1086,12 @@ Function Get-KCCEvents($ComputerName, $IsReachable) {
                 LogName   = 'Directory Service'
                 Id        = 1311, 1566
                 StartTime = (Get-Date).AddHours(-8)
-            } -ErrorAction SilentlyContinue | Measure-Object).Count
+            } -ErrorAction Stop | Measure-Object).Count
         return $count
     }
     catch {
-        return "Error"
+        if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') { return 0 }
+        return "UNKNOWN"
     }
 }
 

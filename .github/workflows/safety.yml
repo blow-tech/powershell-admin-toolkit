@@ -1,0 +1,16 @@
+name: Isolated PowerShell safety
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  fixtures:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Windows PowerShell 5.1 parser and mocked regressions
+        shell: powershell
+        run: ./tests/Validate-Scripts.ps1
+      - name: PowerShell 7 parser and mocked regressions
+        shell: pwsh
+        run: ./tests/Validate-Scripts.ps1

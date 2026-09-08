@@ -1,53 +1,29 @@
-<#
-=============================================================================================
-Name:           Convert user mailbox to shared mailboxes in bulk
-Description:    This script converts user mailboxes to shared mailboxes via import CSV
-Version:        1.0
-Website:        m365scripts.com
-Blog:           https://m365scripts.com/exchange-online/microsoft-365-convert-user-mailbox-to-shared-mailbox-using-powershell
-============================================================================================
-#>
-
-
-#Input File path declaration
-$CSVPath=<FilePath>
-
-#Check for EXO module inatallation
-$Module = Get-Module ExchangeOnlineManagement -ListAvailable
- if($Module.count -eq 0) 
- { 
-  Write-Host Exchange Online PowerShell module is not available  -ForegroundColor yellow  
-  $Confirm= Read-Host Are you sure you want to install module? [Y] Yes [N] No 
-  if($Confirm -match "[yY]") 
-  { 
-   Write-host "Installing Exchange Online PowerShell module"
-   Install-Module ExchangeOnlineManagement -Repository PSGallery -AllowClobber -Force -Scope CurrentUser
-   Import-Module ExchangeOnlineManagement
-  } 
-  else 
-  { 
-   Write-Host EXO module is required to connect Exchange Online.Please install module using Install-Module ExchangeOnlineManagement cmdlet. 
-   Exit
-  }
- } 
-Write-Host Connecting to Exchange Online...
-Connect-ExchangeOnline  -ShowBanner:$false
-Import-CSV $CSVPath | foreach {
- $UPN=$_.UPN
- Write-Progress -Activity "Converting $UPN to shared mailbox… "
- Set-Mailbox –Identity $UPN -Type Shared 
- If($?) 
- { 
-  Write-Host $UPN Successfully converted to shared mailbox -ForegroundColor cyan 
- } 
- Else 
- { 
-  Write-Host $UPN - Error occurred –ForegroundColor Red 
- } 
+#Requires -Version 5.1
+<# Requires an existing Exchange Online session in the explicitly expected organization. #>
+[CmdletBinding(SupportsShouldProcess, ConfirmImpact='High')]
+param(
+    [Parameter(Mandatory)][string]$CSVPath,
+    [Parameter(Mandatory)][guid]$ExpectedTenantId
+)
+$ErrorActionPreference='Stop'
+$organization = @(Get-OrganizationConfig -ErrorAction Stop)
+if ($organization.Count -ne 1 -or [string]$organization[0].ExternalDirectoryOrganizationId -ne $ExpectedTenantId.ToString()) { throw 'Exchange tenant mismatch or unavailable session.' }
+$rows = @(Import-Csv -LiteralPath $CSVPath -ErrorAction Stop)
+if ($rows.Count -eq 0) { throw 'CSV is empty; expected UPN header.' }
+$seen=@{}
+$plan = foreach ($row in $rows) {
+    if ([string]::IsNullOrWhiteSpace($row.UPN) -or $row.UPN -notmatch '^[^\s@]+@[^\s@]+\.[^\s@]+$') { throw 'Missing/invalid UPN in CSV.' }
+    if ($seen.ContainsKey($row.UPN)) { throw "Duplicate UPN: $($row.UPN)" }
+    $seen[$row.UPN]=$true
+    $mailbox=Get-Mailbox -Identity $row.UPN -ErrorAction Stop
+    if ($mailbox.RecipientTypeDetails -notin 'UserMailbox','SharedMailbox') { throw "Unsupported mailbox type: $($row.UPN)" }
+    $mailbox
 }
-
-#Disconnect Exchange Online session
-Disconnect-ExchangeOnline -Confirm:$false | Out-Null
-Write-Host `n~~ Script prepared by AdminDroid Community ~~`n -ForegroundColor Green
-Write-Host "~~ Check out " -NoNewline -ForegroundColor Green; Write-Host "admindroid.com" -ForegroundColor Yellow -NoNewline; Write-Host " to get access to 1800+ Microsoft 365 reports. ~~" -ForegroundColor Green `n`n
- 
+foreach ($mailbox in $plan) {
+    if ($mailbox.RecipientTypeDetails -eq 'SharedMailbox') { continue }
+    if ($PSCmdlet.ShouldProcess("$($mailbox.UserPrincipalName) [$($mailbox.ExchangeGuid)]", 'Convert user mailbox to shared')) {
+        Set-Mailbox -Identity $mailbox.ExchangeGuid.ToString() -Type Shared -ErrorAction Stop
+        if ((Get-Mailbox -Identity $mailbox.ExchangeGuid.ToString() -ErrorAction Stop).RecipientTypeDetails -ne 'SharedMailbox') { throw 'Mailbox conversion verification failed.' }
+        [pscustomobject]@{ Identity=$mailbox.ExchangeGuid; Status='Converted' }
+    }
+}

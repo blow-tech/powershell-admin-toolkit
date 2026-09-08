@@ -81,7 +81,7 @@ param (
 )
 
 Set-StrictMode -Version Latest
-$ErrorActionPreference = 'SilentlyContinue'
+$ErrorActionPreference = 'Stop'
 
 #region ── Helpers ────────────────────────────────────────────────────────────
 
@@ -136,9 +136,9 @@ function Get-DiskHealthChecks {
 function Get-ServiceHealthChecks {
  Write-Log "Checking critical services..."
  foreach ($svc in $Services) {
- $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
+ $s = Get-Service -Name $svc -ErrorAction Stop
  if ($null -eq $s) {
- New-CheckResult -Category 'Service' -Item $svc -Status 'INFO' -Detail 'Service not found on this host'
+ New-CheckResult -Category 'Service' -Item $svc -Status 'UNKNOWN' -Detail 'Required service unavailable'
  continue
  }
  $status = if ($s.Status -eq 'Running') { 'OK' } else { 'CRITICAL' }
@@ -149,7 +149,7 @@ function Get-ServiceHealthChecks {
 
 function Get-CertificateHealthChecks {
  Write-Log "Checking certificate expiry..."
- $certs = Get-ChildItem -Path 'Cert:\LocalMachine\My' -ErrorAction SilentlyContinue
+ $certs = Get-ChildItem -Path 'Cert:\LocalMachine\My' -ErrorAction Stop
  if (-not $certs) {
  New-CheckResult -Category 'Certificate' -Item 'LocalMachine\My' -Status 'INFO' -Detail 'No certificates found in personal store'
  return
@@ -167,38 +167,29 @@ function Get-CertificateHealthChecks {
 }
 
 function Get-ADReplicationHealthChecks {
- Write-Log "Checking AD replication..."
- if (-not (Get-Command 'repadmin' -ErrorAction SilentlyContinue)) {
- New-CheckResult -Category 'AD Replication' -Item 'repadmin' -Status 'INFO' -Detail 'repadmin not available on this host'
- return
- }
- $replSummary = repadmin /replsummary 2>&1
- $failLines = $replSummary | Where-Object { $_ -match 'FAIL|error' }
- if ($failLines) {
- foreach ($line in $failLines) {
- New-CheckResult -Category 'AD Replication' -Item 'Replication' -Status 'CRITICAL' -Detail $line.Trim()
- }
- } else {
- New-CheckResult -Category 'AD Replication' -Item 'Replication Summary' -Status 'OK' -Detail 'No replication failures detected (repadmin /replsummary)'
- }
-
- # Check replication queue
- $queue = repadmin /queue 2>&1 | Where-Object { $_ -match 'pending' }
- if ($queue) {
- New-CheckResult -Category 'AD Replication' -Item 'Replication Queue' -Status 'WARNING' -Detail ($queue -join ' | ')
- }
+ try {
+  Import-Module ActiveDirectory -ErrorAction Stop
+  $partners=@(Get-ADReplicationPartnerMetadata -Target $env:COMPUTERNAME -Scope Server -ErrorAction Stop)
+  $failures=@(Get-ADReplicationFailure -Target $env:COMPUTERNAME -Scope Server -ErrorAction Stop)
+  if ($partners.Count -eq 0) {
+   New-CheckResult 'AD Replication' 'Local DC' 'UNKNOWN' 'No partners returned; verify single-DC topology or collection scope.'
+  } elseif ($failures.Count -gt 0 -or @($partners | Where-Object LastReplicationResult -ne 0).Count -gt 0) {
+   New-CheckResult 'AD Replication' 'Local DC' 'CRITICAL' 'Replication failures or nonzero partner results detected.'
+  } else { New-CheckResult 'AD Replication' 'Local DC' 'OK' 'Partner metadata and failure collection succeeded; no errors returned.' }
+ } catch { New-CheckResult 'AD Replication' 'Local DC' 'UNKNOWN' $_.Exception.Message }
 }
 
 function Get-DNSHealthChecks {
  Write-Log "Checking DNS health..."
  # Test local DNS resolution
- $testHosts = @('_ldap._tcp', $env:USERDNSDOMAIN, 'google.com')
+ $testHosts = @($env:USERDNSDOMAIN)
+ if (-not $env:USERDNSDOMAIN) { throw 'Domain DNS name unavailable.' }
  foreach ($h in $testHosts) {
  if (-not $h) { continue }
  try {
  $result = Resolve-DnsName -Name $h -ErrorAction Stop | Select-Object -First 1
  New-CheckResult -Category 'DNS' -Item "Resolve: $h" -Status 'OK' `
- -Detail "Resolved to: $(if ($result.IPAddress) { $result.IPAddress } elseif ($result.NameHost) { $result.NameHost } else { 'SRV record' })"
+ -Detail "DNS answer returned for $h"
  } catch {
  New-CheckResult -Category 'DNS' -Item "Resolve: $h" -Status 'CRITICAL' -Detail $_.Exception.Message
  }
@@ -221,7 +212,8 @@ function Get-DCConnectivityChecks {
  Write-Log "Checking Domain Controller connectivity..."
  try {
  Import-Module ActiveDirectory -ErrorAction Stop
- $dcs = Get-ADDomainController -Filter * | Select-Object -ExpandProperty HostName
+ $dcs = @(Get-ADDomainController -Filter * -ErrorAction Stop | Select-Object -ExpandProperty HostName)
+ if ($dcs.Count -eq 0) { throw 'No DCs retrieved.' }
  foreach ($dc in $dcs) {
  $ping = Test-Connection -ComputerName $dc -Count 1 -Quiet
  $ldap = Test-NetConnection -ComputerName $dc -Port 389 -InformationLevel Quiet -WarningAction SilentlyContinue
@@ -232,40 +224,27 @@ function Get-DCConnectivityChecks {
  -Status $status -Detail "Ping: $ping | LDAP(389): $ldap"
  }
  } catch {
- New-CheckResult -Category 'DC Connectivity' -Item 'ActiveDirectory Module' -Status 'INFO' `
+ New-CheckResult -Category 'DC Connectivity' -Item 'ActiveDirectory Module' -Status 'UNKNOWN' `
  -Detail 'AD module unavailable or insufficient permissions'
  }
 }
 
 function Get-EventLogSummaryChecks {
- Write-Log "Checking event logs (last 24 hours)..."
- $since = (Get-Date).AddHours(-24)
  foreach ($log in @('System','Application')) {
- $errors = Get-EventLog -LogName $log -EntryType Error -After $since -ErrorAction SilentlyContinue
- $warnings = Get-EventLog -LogName $log -EntryType Warning -After $since -ErrorAction SilentlyContinue
- $errCount = ($errors | Measure-Object).Count
- $warnCount = ($warnings | Measure-Object).Count
- $status = if ($errCount -gt 10) { 'CRITICAL' }
- elseif ($errCount -gt 0 -or $warnCount -gt 20) { 'WARNING' }
- else { 'OK' }
- $topErrors = ($errors | Select-Object -First 3 | ForEach-Object { "[$($_.EventID)] $($_.Source)" }) -join ' | '
- New-CheckResult -Category 'Event Logs' -Item $log `
- -Status $status -Detail "Errors(24h): $errCount | Warnings: $warnCount$(if($topErrors){ ' | Top: ' + $topErrors })"
+  try {
+   $events=@()
+   try { $events=@(Get-WinEvent -FilterHashtable @{LogName=$log; Level=1,2,3; StartTime=(Get-Date).AddHours(-24)} -ErrorAction Stop) }
+   catch { if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') { throw } }
+   $errors=@($events | Where-Object Level -in 1,2).Count
+   $warnings=@($events | Where-Object Level -eq 3).Count
+   $status=if ($errors -gt 10) {'CRITICAL'} elseif ($errors -gt 0 -or $warnings -gt 20) {'WARNING'} else {'OK'}
+   New-CheckResult 'Event Logs' $log $status "Errors/critical: $errors; warnings: $warnings (24h)"
+  } catch { New-CheckResult 'Event Logs' $log 'UNKNOWN' $_.Exception.Message }
  }
 }
 
 function Get-ADBackupStatusCheck {
- Write-Log "Checking AD backup metadata..."
- try {
- Import-Module ActiveDirectory -ErrorAction Stop
- $dc = Get-ADDomainController -Discover -NextClosestSite
- $ntds = Get-ADObject -Identity "CN=NTDS Settings,$($dc.NTDSSettingsObjectDN)" -Properties 'msDS-ReplAttributeMetaData' -ErrorAction Stop
- New-CheckResult -Category 'AD Backup' -Item 'Backup Metadata' -Status 'INFO' `
- -Detail "DC: $($dc.HostName) | Run 'repadmin /showbackup' for full details"
- } catch {
- New-CheckResult -Category 'AD Backup' -Item 'Backup Metadata' -Status 'INFO' `
- -Detail 'Unable to query backup metadata - verify AD module permissions'
- }
+ New-CheckResult 'AD Backup' 'Backup verification' 'UNKNOWN' 'Backup status is not implemented for the environment backup product. Verify its authoritative catalog and latest successful restore test.'
 }
 
 #endregion
@@ -275,19 +254,23 @@ function Get-ADBackupStatusCheck {
 function New-HtmlReport {
  param([object[]]$Results, [string]$ComputerName, [datetime]$RunTime)
 
- $ok = ($Results | Where-Object Status -eq 'OK' ).Count
- $warn = ($Results | Where-Object Status -eq 'WARNING' ).Count
- $crit = ($Results | Where-Object Status -eq 'CRITICAL' ).Count
- $info = ($Results | Where-Object Status -eq 'INFO' ).Count
+ $ok = @($Results | Where-Object Status -eq 'OK').Count
+ $warn = @($Results | Where-Object Status -eq 'WARNING').Count
+ $crit = @($Results | Where-Object Status -eq 'CRITICAL').Count
+ $info = @($Results | Where-Object Status -eq 'INFO').Count
 
- $overallStatus = if ($crit -gt 0) { 'CRITICAL' } elseif ($warn -gt 0) { 'WARNING' } else { 'OK' }
+ $unknown = @($Results | Where-Object Status -in 'UNKNOWN','ERROR').Count
+ $overallStatus = if ($crit -gt 0) { 'CRITICAL' } elseif ($unknown -gt 0 -or $Results.Count -eq 0) { 'UNKNOWN' } elseif ($warn -gt 0) { 'WARNING' } else { 'OK' }
  $overallColor = switch ($overallStatus) {
  'CRITICAL' { '#e74c3c' }
+ 'UNKNOWN' { '#f39c12' }
  'WARNING' { '#f39c12' }
  default { '#27ae60' }
  }
 
  $statusBadge = @{
+ 'UNKNOWN' = '<span class="badge warning">UNKNOWN</span>'
+ 'ERROR' = '<span class="badge critical">ERROR</span>'
  'OK' = '<span class="badge ok">✔ OK</span>'
  'WARNING' = '<span class="badge warning">⚠ WARNING</span>'
  'CRITICAL' = '<span class="badge critical">✖ CRITICAL</span>'
@@ -297,7 +280,7 @@ function New-HtmlReport {
  $categories = $Results | Select-Object -ExpandProperty Category -Unique
 
  $tableRows = foreach ($cat in $categories) {
- $catResults = $Results | Where-Object Category -eq $cat
+ $catResults = @($Results | Where-Object Category -eq $cat)
  $first = $true
  foreach ($r in $catResults) {
  $rowClass = $r.Status.ToLower()
@@ -305,7 +288,7 @@ function New-HtmlReport {
  "<td class='cat-cell' rowspan='$(($catResults).Count)'>$cat</td>"
  $first = $false
  } else { '' }
- "<tr class='$rowClass'>$catCell<td>$($r.Item)</td><td>$($statusBadge[$r.Status])</td><td>$($r.Detail)</td></tr>"
+ "<tr class='$rowClass'>$catCell<td>$([Net.WebUtility]::HtmlEncode($r.Item))</td><td>$($statusBadge[$r.Status])</td><td>$([Net.WebUtility]::HtmlEncode($r.Detail))</td></tr>"
  }
  }
 
@@ -381,7 +364,7 @@ function New-HtmlReport {
  <div class="card ok"> <div class="num">$ok</div> <div class="lbl">Passed</div></div>
  <div class="card warn"> <div class="num">$warn</div> <div class="lbl">Warnings</div></div>
  <div class="card crit"> <div class="num">$crit</div> <div class="lbl">Critical</div></div>
- <div class="card info"> <div class="num">$info</div> <div class="lbl">Info</div></div>
+ <div class="card info"> <div class="num">$info</div> <div class="lbl">Info (unknown: $unknown)</div></div>
 </div>
 
 <table>
@@ -411,15 +394,13 @@ $reportFile = Join-Path $OutputPath "HealthCheck_${hostName}_$($runTime.ToString
 Write-Log "=== Environment Health Check Starting on $hostName ===" 'INFO'
 
 $allResults = @()
-$allResults += Get-DiskHealthChecks
-$allResults += Get-ServiceHealthChecks
-$allResults += Get-CertificateHealthChecks
-$allResults += Get-ADReplicationHealthChecks
-$allResults += Get-DNSHealthChecks
-$allResults += Get-SysvolNetlogonChecks
-$allResults += Get-DCConnectivityChecks
-$allResults += Get-EventLogSummaryChecks
-$allResults += Get-ADBackupStatusCheck
+foreach ($check in @('Get-DiskHealthChecks','Get-ServiceHealthChecks','Get-CertificateHealthChecks','Get-ADReplicationHealthChecks','Get-DNSHealthChecks','Get-SysvolNetlogonChecks','Get-DCConnectivityChecks','Get-EventLogSummaryChecks','Get-ADBackupStatusCheck')) {
+ try {
+  $result=@(& $check)
+  if ($result.Count -eq 0) { throw 'Check returned no results.' }
+  $allResults += $result
+ } catch { $allResults += New-CheckResult 'Collection' $check 'UNKNOWN' $_.Exception.Message }
+}
 
 # Console summary
 $allResults | Format-Table -AutoSize
@@ -435,7 +416,7 @@ if ($SendEmail) {
  if (-not $SmtpServer -or -not $EmailFrom -or -not $EmailTo) {
  Write-Log "SendEmail specified but SmtpServer, EmailFrom, or EmailTo missing. Skipping." 'WARN'
  } else {
- $subject = "[$((($allResults | Where-Object Status -in 'CRITICAL','WARNING') | Measure-Object).Count) Issues] Health Check - $hostName - $($runTime.ToString('yyyy-MM-dd'))"
+ $subject = "[$((($allResults | Where-Object Status -in 'CRITICAL','WARNING','UNKNOWN','ERROR') | Measure-Object).Count) Issues] Health Check - $hostName - $($runTime.ToString('yyyy-MM-dd'))"
  Send-MailMessage -From $EmailFrom -To $EmailTo -Subject $subject `
  -Body $html -BodyAsHtml -SmtpServer $SmtpServer -Encoding UTF8
  Write-Log "Report emailed to: $($EmailTo -join ', ')" 'OK'
