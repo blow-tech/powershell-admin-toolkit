@@ -327,16 +327,10 @@ Write-Output "Collating Detail for $Target"
 			}
 			$MyReport += Get-HTMLTable ($IPInfo)
 		$MyReport += Get-CustomHeaderClose
-		If ((get-wmiobject -ComputerName $Target -namespace "root/cimv2" -list) | Where-Object {$_.name -match "Win32_Product"})
-		{
-			Write-Output "..Software"
-			$MyReport += Get-CustomHeader "2" "Software"
-				$MyReport += Get-HTMLTable (get-wmiobject -ComputerName $Target Win32_Product | select Name,Version,Vendor,InstallDate)
-			$MyReport += Get-CustomHeaderClose
-		}
-		Else {
-			Write-Output "..Software WMI class not installed"
-		}
+		# Software MSI enumeration is deliberately disabled: querying Win32_Product can trigger repairs.
+		$MyReport += Get-CustomHeader "2" "Software - NOT COLLECTED"
+		$MyReport += "<p>Use a separately validated registry or endpoint-inventory collector. No MSI enumeration was performed.</p>"
+		$MyReport += Get-CustomHeaderClose
 		Write-Output "..Local Shares"
 		$Shares = Get-wmiobject -ComputerName $Target Win32_Share
 		$MyReport += Get-CustomHeader "2" "Local Shares"

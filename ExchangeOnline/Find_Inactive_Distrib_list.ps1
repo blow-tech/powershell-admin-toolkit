@@ -23,7 +23,7 @@ param(
     [string] $ClientId,
     [string] $Organization,
     [string] $UserName,
-    [string] $Password,
+    [pscredential]$Credential,
     [String]$HistoricalMessageTraceReportPath
 )
 
@@ -69,11 +69,9 @@ Function ConnectEXO
             #Connect Exchange online using Certificate based Authentication 
             Connect-ExchangeOnline -CertificateThumbprint $CertificateThumbPrint -AppId $ClientId -Organization $Organization -ErrorAction stop -ShowBanner:$false
         }
-        elseif(($UserName -ne "") -and ($Password -ne ""))
+        elseif($null -ne $Credential)
         {
             #Connect Exchange online using username and password
-            $SecuredPassword = ConvertTo-SecureString -AsPlainText $Password -Force
-            $Credential = New-Object System.Management.Automation.PSCredential $UserName, $SecuredPassword
             Connect-ExchangeOnline -Credential $Credential -ErrorAction stop -ShowBanner:$false
         }
         else
@@ -110,21 +108,19 @@ Function FindDifference{
 
 Function GettingInactiveDistributionLists
 {
-    # Read the original CSV file content
-    $originalContent = Get-Content -Path $HistoricalMessageTraceReportPath
-    # Remove non-printable characters (if any)
-    $sanitizedContent = $originalContent -replace '[^\P{C}]', ''
-    Set-Content -Path $HistoricalMessageTraceReportPath -Value $sanitizedContent
-
-    Import-CSV -path $HistoricalMessageTraceReportPath | Foreach-Object {
+    # Preserve input evidence byte-for-byte. Parse dates before comparing them.
+    Import-Csv -LiteralPath $HistoricalMessageTraceReportPath -ErrorAction Stop | ForEach-Object {
+        if (-not $_.PSObject.Properties['recipient_status'] -or -not $_.PSObject.Properties['origin_timestamp_utc']) {
+            throw 'Trace CSV requires recipient_status and origin_timestamp_utc headers.'
+        }
         $RecipientAddresses = $_.'recipient_status' -Split ';'
         ForEach($RecipientAddress in $RecipientAddresses){
             $Recipient = $RecipientAddress -Split "##" | select -Index(0)
             $DL = $global:DistributionLists.$Recipient
             if($DL)
             {
-                $LastEmail = Get-Date -Date $($_.'origin_timestamp_utc')
-                $LastEmailReceived = $LastEmail.ToString("dd-MM-yyyy  HH:mm:ss")                
+                $LastEmail = [datetimeoffset]::Parse($_.'origin_timestamp_utc',[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::AssumeUniversal).UtcDateTime
+                $LastEmailReceived = $LastEmail
                 $Difference = FindDifference -DateTime $LastEmail
                 if($global:InactiveDistributionLists.$DL)
                 {
@@ -163,13 +159,13 @@ ForEach($DistributionList in $global:DistributionLists.GetEnumerator()){
     if($DL -eq $($DistributionList.Value)){
         if($global:InactiveDistributionLists.$DL)
         {
-            $LastEmailReceivedDate = $global:InactiveDistributionLists.$DL[0]
+            $LastEmailReceivedDate = $global:InactiveDistributionLists.$DL[0].ToString('o')
             $InactiveDays = $global:InactiveDistributionLists.$DL[1]
         }
         else
         {
             $LastEmailReceivedDate = "No data available"
-            $InactiveDays = "Inactive for longer than the selected time range."
+            $InactiveDays = "UNKNOWN - no matching trace in supplied evidence; inactivity is not proven."
         }
         $ExportResult = @{'Group Name' =$DL; 'Last Email Received Date' = $LastEmailReceivedDate; 'Inactive Days' = $InactiveDays }
         $ExportResults = New-Object PSObject -Property $ExportResult

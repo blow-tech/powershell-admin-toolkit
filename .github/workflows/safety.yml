@@ -15,3 +15,11 @@ jobs:
         if: always()
         shell: pwsh
         run: ./tests/Validate-Scripts.ps1
+      - name: Windows PowerShell 5.1 weekly fixtures
+        if: always()
+        shell: powershell
+        run: ./tests/Validate-Weekly.ps1
+      - name: PowerShell 7 weekly fixtures
+        if: always()
+        shell: pwsh
+        run: ./tests/Validate-Weekly.ps1

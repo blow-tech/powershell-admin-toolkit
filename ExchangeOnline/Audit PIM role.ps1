@@ -36,7 +36,7 @@ Param
     [string]$ClientId,
     [string]$CertificateThumbprint,
     [string]$UserName,
-    [string]$Password
+    [pscredential]$Credential
 )
 
 Function Connect_Exo
@@ -61,10 +61,8 @@ Function Connect_Exo
  } 
  Write-Host Connecting to Exchange Online...
  #Storing credential in script for scheduling purpose/ Passing credential as parameter - Authentication using non-MFA account
- if(($UserName -ne "") -and ($Password -ne ""))
+ if($null -ne $Credential)
  {
-  $SecuredPassword = ConvertTo-SecureString -AsPlainText $Password -Force
-  $Credential  = New-Object System.Management.Automation.PSCredential $UserName,$SecuredPassword
   Connect-ExchangeOnline -Credential $Credential -ShowBanner:$false
  }
  elseif($Organization -ne "" -and $ClientId -ne "" -and $CertificateThumbprint -ne "")

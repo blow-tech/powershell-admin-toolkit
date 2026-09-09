@@ -1,5 +1,38 @@
 # Approved script remediation — September 2026
 
+## 9 September continuation (implemented in PR, not deployed)
+
+Additional targeted corrections: five Exchange entry points (`Audit PIM role.ps1`, `Trace Emails Sent to External Domains`, `Export All Mailboxes in Microsoft 365 .ps1`, `Shared Mailbox Size Report`, `Find_Inactive_Distrib_list.ps1`) replace plaintext `-Password` with `-Credential <PSCredential>`. Migrate authentication to approved interactive/certificate sessions; do not place secrets in scheduled command lines. This does not validate every existing connection/report path.
+
+`Find_Inactive_Distrib_list.ps1` no longer rewrites input CSV evidence and compares typed UTC dates, not day-first strings; no trace means UNKNOWN, not proven inactivity. `Monitor_SystemResources.ps1` now expands individual disk/network samples, applies disk-percent inversion once, fails on unavailable counters, defaults to a bounded 15-minute run (`-Duration 1..1440`), stores objects in a List, and emits nested disk/network values as JSON CSV columns. Counter localization and finite-run memory capacity remain lab checks.
+
+| Script | Change / migration |
+| --- | --- |
+| `ActiveDirectory/Get-LockedOutLocation.ps1` | Requires explicit `-Identity` and `-DomainController` list. Resolves SID before event collection, uses exact named XML matching, bounds time/event count, returns per-DC UNKNOWN/TRUNCATED. It no longer derives identity from optional bad-password counters. Output is structured evidence, not formatted text. |
+| `ActiveDirectory/GetUsersLogonLogoffEvents` | Requires `-Server` and `-SearchBase`. Uses DNS hostnames, named XML fields and bounded queries. Distinguishes 4624/4634/4647/4648; 4648 is an attempt, not a successful logon. Failed or capped computer queries prevent success. |
+| `ActiveDirectory/Get-LastLogon` | Requires `-Server`; returns objects with `TimestampStatus`. Replicated timestamps are approximate, missing timestamps UNKNOWN. Never use alone to approve account deactivation. Existing CSV output is refused. |
+| `ActiveDirectory/Get-ExpiringAccounts_Report` | Explicit server/OU, default report-only; `-Send` plus SMTP/from/to and ShouldProcess required for email. Shared manager lookups are cached. This reports account expiry, not password expiry. SMTP transport/authentication is an unvalidated deployment prerequisite; Send-MailMessage is legacy and not an assurance of secure delivery. |
+| `scripts/Send Password Expiry Notifications to M365 Users` | Mandatory expected tenant and days; existing Graph session required. Default preview. Removes automatic module installation/scheduling/session disconnection. Does not guess unknown policy, use UPN as mail, or send to synchronized/federated/guest/never-expiring users. Comma-separated password policies and empty license arrays are handled. Sending requires `-Send -FromAddress -StateDirectory`; ShouldProcess and atomic daily claim markers prevent repeat sends. Pending/ambiguous results require manual reconciliation. Old Schedule/ClientId/certificate options removed; configure authentication/schedules separately. |
+| `ActiveDirectory/Get_MFA_Status.ps1` | Replaces legacy MSOnline/password parameters with Graph registration report, expected `-TenantId`, optional `-UnregisteredOnly`/`-OutputPath`. No session removal. Requires Microsoft.Graph.Reports, AuditLog.Read.All and a supported delegated role or application grant. Disabled accounts are outside API coverage; registration is not Conditional Access enforcement. Old Enabled/Enforced/Admin/License filters are not equivalent and are rejected, not silently mapped. |
+| `scripts/Get-DomanisGPO.ps1` | Independent buffered result per domain; fixes cross-domain contamination. `-Domains` is canonical; old misspelling `-Domians` remains an alias, and existing `Doamin` CSV column is retained for compatibility. Existing outputs and invalid domain/path inputs refused. |
+| `scripts/inventory/Audit.ps1`, `scripts/inventory/systeminfo_report.ps1` | Removes Win32_Product enumeration and class discovery. Software section explicitly NOT COLLECTED; use a separately validated registry/endpoint collector. These are targeted fixes, not full rewrites or certification of the remaining legacy WMI reports. |
+
+The scripts whose repository paths have no extension remain extensionless. For scheduled PowerShell execution, stage a reviewed copy with a `.ps1` suffix; do not assume `powershell.exe -File` will execute arbitrary extensionless files. Preserve the relative layout of scripts that depend on sibling files.
+
+All output/state parents must be trusted, pre-provisioned and protected from concurrent untrusted writers. No ACL changes are made automatically. Graph/SMTP permission, tenant policy, report latency, national-cloud compatibility, audit policy and retained-event coverage still require a disposable lab. Unknown cloud-expiry rows are not eligible for mail. Daily claim files intentionally trade automatic retry for duplicate suppression; absence of a delivery receipt means no exactly-once guarantee. Review pending markers and future retention separately.
+
+`tests/Validate-Weekly.ps1` adds isolated SID/XML, timestamp, policy, preview/WhatIf, dedup/ambiguous-send, GPO domain-isolation, MFA failure and MSI-provider exclusion fixtures. Mail APIs and all external collectors are mocked. Windows PowerShell 5.1 and PowerShell 7 CI results, not local Linux inspection, determine runtime validation.
+
+Authoritative semantics checked on 9 September 2026:
+
+- [Microsoft Event 4740 XML](https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4740)
+- [Microsoft Event 4648](https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4648)
+- [lastLogonTimestamp schema](https://learn.microsoft.com/en-us/windows/win32/adschema/a-lastlogontimestamp)
+- [Graph user password policy fields](https://learn.microsoft.com/en-us/graph/api/resources/user)
+- [Graph registration report scope and permissions](https://learn.microsoft.com/en-us/graph/api/authenticationmethodsroot-list-userregistrationdetails)
+
+Remaining review coverage and severity-ranked findings are tracked in `REVIEW-2026-09-09.md`. Prior fixes remain in the same unmerged draft PR.
+
 This change addresses the findings from the 7–8 September reviews. It is a repository patch, not a production deployment. Earlier static review covered 59 scripts across two script repositories; it was not a full runtime certification. Unchanged scripts remain outside this patch's runtime claims.
 
 ## Finding map and migration requirements

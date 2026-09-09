@@ -26,7 +26,7 @@ param(
     [Nullable[DateTime]]$StartDate,
     [Nullable[DateTime]]$EndDate,
     [string]$UserName,
-    [string]$Password,
+    [pscredential]$Credential,
     [string]$SenderAddress = "",
     [string]$RecipientAddress = "",
     [ValidateSet("Delivered", "Failed", "Gettingstatus", "FilteredAsSpam","Quarantined")]
@@ -85,9 +85,7 @@ Function Connect_Exo {
 
     Write-Host "Connecting to Exchange Online..."
     
-    if ($UserName -and $Password) {
-        $SecuredPassword = ConvertTo-SecureString -AsPlainText $Password -Force
-        $Credential = New-Object System.Management.Automation.PSCredential ($UserName, $SecuredPassword)
+    if ($null -ne $Credential) {
         Connect-ExchangeOnline -Credential $Credential -ShowBanner:$false
     }
 

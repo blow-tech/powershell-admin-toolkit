@@ -23,7 +23,7 @@ Param
     [Parameter(Mandatory = $false)]
     [string]$MBNamesFile,
     [string]$UserName,
-    [string]$Password,
+    [pscredential]$Credential,
     [string]$Organization,
     [string]$ClientId,
     [string]$CertificateThumbprint
@@ -67,10 +67,8 @@ Function main()
 
  Write-Host Connecting to Exchange Online...
  #Storing credential in script for scheduling purpose/ Passing credential as parameter - Authentication using non-MFA account
- if(($UserName -ne "") -and ($Password -ne ""))
+ if($null -ne $Credential)
  {
-  $SecuredPassword = ConvertTo-SecureString -AsPlainText $Password -Force
-  $Credential  = New-Object System.Management.Automation.PSCredential $UserName,$SecuredPassword
   Connect-ExchangeOnline -Credential $Credential
  }
  elseif($Organization -ne "" -and $ClientId -ne "" -and $CertificateThumbprint -ne "")
@@ -179,5 +177,5 @@ Function main()
  Write-Host "~~ Check out " -NoNewline -ForegroundColor Green; Write-Host "admindroid.com" -ForegroundColor Yellow -NoNewline; Write-Host " to get access to 1800+ Microsoft 365 reports. ~~" -ForegroundColor Green `n`n
  
 }
- . main 
+ . main
  

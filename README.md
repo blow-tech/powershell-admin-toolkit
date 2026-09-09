@@ -8,7 +8,7 @@
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Last Commit](https://img.shields.io/github/last-commit/blow-tech/powershell-admin-toolkit)
 
-Production PowerShell scripts for Windows Server, Active Directory, Exchange Online, and Microsoft 365 administration. Built from real incidents and daily operations — not tutorial code.
+PowerShell administration scripts and community samples for Windows Server, Active Directory, Exchange Online, and Microsoft 365. Review coverage and platform validation vary; do not treat the collection as production-certified.
 
 ---
 
@@ -23,7 +23,7 @@ Production PowerShell scripts for Windows Server, Active Directory, Exchange Onl
 | Backup | AD state backup automation |
 | Inventory | System info collection, environment audit |
 
-All scripts include comment-based help (accessible via `Get-Help`), parameter validation, and error handling.
+Use the actual source parameters and [migration notes](REMEDIATION-2026-09.md) as authoritative. Older examples below include incorrect names/extensions and unsupported parameters; do not copy them into production schedules without verification.
 
 ---
 

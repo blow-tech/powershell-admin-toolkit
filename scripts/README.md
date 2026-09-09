@@ -1,5 +1,7 @@
 # scripts
 
+September continuation: [migration notes](../REMEDIATION-2026-09.md) supersede the historical examples below. The actual M365 expiry path has no extension, uses `-TenantId -DaysToExpiry`, previews by default and never registers schedules. The two legacy WMI inventories no longer query MSI software and mark that section NOT COLLECTED. GPO exports use explicit domains and do not mix their results.
+
 General-purpose administration scripts covering inventory collection, system reporting, disk cleanup, and Microsoft 365 notifications. Organised into subfolders by function.
 
 ---
