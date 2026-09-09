@@ -71,14 +71,15 @@ Write-Output 'PASS: cloud-expiry policies, licensing, synchronized and federated
 $temp=Join-Path ([IO.Path]::GetTempPath()) ('weekly-fixtures-'+[guid]::NewGuid().ToString('N'))
 $null=New-Item -ItemType Directory -Path $temp
 try {
-    function Get-MgDomain {$domains['example.test']}
+    # Do not close over $domains: the entry point creates its own domain index.
+    function Get-MgDomain {[pscustomobject]@{Id='example.test';AuthenticationType='Managed';PasswordValidityPeriodInDays=90}}
     function Get-MgUser {$user}
     $script:MailCalls=0
     function Send-MgUserMail {$script:MailCalls++}
     $args=@{TenantId='33333333-3333-3333-3333-333333333333';DaysToExpiry=7}
     $path='scripts/Send Password Expiry Notifications to M365 Users'
     $r=@(Invoke-Fixture $path $args)
-    Assert ($script:MailCalls -eq 0 -and $r[0].Recipient -eq 'actual@example.test') 'Default preview must use directory mail and never send.'
+    Assert ($script:MailCalls -eq 0 -and $r[0].Status -eq 'Eligible' -and $r[0].Recipient -eq 'actual@example.test') 'Default preview must use known policy and directory mail, never send.'
     $args.Send=$true;$args.FromAddress='sender@example.test';$args.StateDirectory=$temp;$args.WhatIf=$true
     $null=Invoke-Fixture $path $args
     Assert ($script:MailCalls -eq 0 -and @(Get-ChildItem $temp -Filter '*.state').Count -eq 0) 'WhatIf must not send or consume state.'
@@ -125,6 +126,13 @@ try {
     $failed=$false;try {Invoke-Fixture 'ActiveDirectory/Get_MFA_Status.ps1' @{TenantId='33333333-3333-3333-3333-333333333333';OutputPath=(Join-Path $temp 'denied.csv')}} catch {$failed=$true}
     Assert ($failed -and -not (Test-Path (Join-Path $temp 'denied.csv'))) 'Failed MFA collection must not publish a clean report.'
     Write-Output 'PASS: MFA registration scope and collection failure.'
+
+    function Search-ADAccount {[pscustomobject]@{DistinguishedName='CN=alice,DC=example,DC=test'}}
+    function Get-ADUser {[pscustomobject]@{Name='Alice';SamAccountName='alice';Manager=$null;AccountExpirationDate=(Get-Date).AddDays(1);DistinguishedName='CN=alice,DC=example,DC=test'}}
+    $r=@(Invoke-Fixture 'ActiveDirectory/Get-ExpiringAccounts_Report' @{Server='dc.example.test';SearchBase='OU=fixture,DC=example,DC=test'})
+    Assert ($r.Count -eq 1 -and $r[0].ManagerState -eq 'NotAssigned') 'Account expiry must preview without SMTP configuration.'
+    $null=Invoke-Fixture 'ActiveDirectory/Get-ExpiringAccounts_Report' @{Server='dc.example.test';SearchBase='OU=fixture,DC=example,DC=test';Send=$true;EmailFrom='sender@example.test';EmailTo='recipient@example.test';EmailSMTPServer='smtp.example.test';WhatIf=$true}
+    Write-Output 'PASS: account-expiry preview and SMTP WhatIf with no delivery.'
 } finally {Remove-Item -LiteralPath $temp -Recurse -Force}
 
 foreach ($path in 'scripts/inventory/Audit.ps1','scripts/inventory/systeminfo_report.ps1') {
