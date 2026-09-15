@@ -1,12 +1,11 @@
-# linux-admin-scripts
+# powershell-admin-toolkit
 
-Bash tooling for RHEL/CentOS server operations, health monitoring, and auditing — built from real production maintenance workflows.
+Production automation scripts for Windows Server and Microsoft 365 environments — built to solve recurring operational problems across Active Directory, Exchange Online, and infrastructure health monitoring.
 
-![Bash](https://img.shields.io/badge/Bash-4EAA25?style=flat&logo=gnu-bash&logoColor=white)
-![RHEL](https://img.shields.io/badge/RHEL%20%2F%20CentOS-EE0000?style=flat&logo=redhat&logoColor=white)
+![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?style=flat&logo=powershell&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-> Sanitized, generalized versions of scripts used in live production environments. Environment-specific values (hostnames, paths, thresholds) are replaced with placeholders — review before running.
+> These scripts are sanitized, generalized versions of tools used in live production environments. All environment-specific values (domain names, server names, mailboxes, paths) are replaced with placeholders — review and adapt before running against your own environment.
 
 ---
 
@@ -14,11 +13,12 @@ Bash tooling for RHEL/CentOS server operations, health monitoring, and auditing 
 
 | Script | Purpose |
 |---|---|
-| `healthcheck.sh` | System health check with configurable thresholds (CPU, memory, disk, load) and alerting |
-| `log-parser.sh` | Parses rotated and compressed logs (`.gz`) for pattern matching and summary reporting |
-| `service-monitor.sh` | Monitors systemd services and restarts them on failure with logging |
-| `backup-validate.sh` | Validates backup completion and integrity against expected schedules |
-| `cron-maintenance.sh` | Scheduled cleanup and maintenance tasks structured for cron, with consistent log output |
+| `AD-LifecycleReport.ps1` | Generates a report of AD account lifecycle events (creations, disables, stale accounts) |
+| `ExchangeOnline-AuditReport.ps1` | Audits Exchange Online mailbox permissions, forwarding rules, and mail flow anomalies |
+| `Environment-HealthCheck.ps1` | Single-pass health check across AD replication, DNS, certificate expiry, disk space, and critical services — output as one consolidated HTML report |
+| `Disk-AutoReclaim.ps1` | Automated cleanup of temp files, logs, and reclaimable disk space with configurable thresholds |
+| `PasswordExpiry-Notify.ps1` | Sends password expiry warnings to users ahead of the policy deadline |
+| `PIM-RoleAudit.ps1` | Audits active/eligible Privileged Identity Management role assignments in Entra ID |
 
 *(Update table with your actual script names/filenames.)*
 
@@ -26,43 +26,41 @@ Bash tooling for RHEL/CentOS server operations, health monitoring, and auditing 
 
 ## ⚙️ Requirements
 
-- Bash 4+
-- RHEL / CentOS (tested on: *add version, e.g. RHEL 8.x / 9.x*)
-- Standard GNU coreutils; any additional dependencies noted per-script header
-- `sudo`/root access required for service-monitor and cron-maintenance scripts
+- PowerShell 5.1 or later (7.x compatible where noted)
+- RSAT / ActiveDirectory module (for AD scripts)
+- ExchangeOnlineManagement module (for Exchange scripts)
+- Microsoft Graph PowerShell SDK (for PIM/Entra scripts)
+- Appropriate delegated permissions — see each script header for the minimum required role
 
 ---
 
 ## 🚀 Usage
 
-```bash
-# Example: run a health check with default thresholds
-./healthcheck.sh --cpu-threshold 85 --disk-threshold 90
-
-# Example: schedule via cron (daily at 2am)
-0 2 * * * /opt/scripts/cron-maintenance.sh >> /var/log/cron-maintenance.log 2>&1
+```powershell
+# Example: run the environment health check
+.\Environment-HealthCheck.ps1 -DomainController <DCName> -OutputPath C:\Reports\health.html
 ```
 
 Each script includes:
-- A usage header (`./script.sh --help`)
-- Exit codes documented for monitoring integration
-- Logging to a configurable path for auditability
+- A comment-based help header (`Get-Help .\Script.ps1 -Full`)
+- Required parameters and permissions documented inline
+- No hardcoded credentials — scripts prompt or use existing authenticated sessions
 
 ---
 
 ## 🖼️ Sample Output
 
-*(Add a screenshot or terminal output sample here — showing a real health-check run or log summary demonstrates functionality more convincingly than a feature list.)*
+*(Add a screenshot here of the HTML health report or a sample console/report output — this is the single highest-impact addition. A sanitized screenshot showing the report structure demonstrates real functionality far better than a description.)*
 
 ```
-![Sample health check output](./docs/sample-output.png)
+![Sample health report](./docs/sample-health-report.png)
 ```
 
 ---
 
 ## ⚠️ Disclaimer
 
-Provided as-is for reference and adaptation. Test in a non-production environment first. No warranty is expressed or implied.
+These scripts are provided as-is for reference and adaptation. Test in a non-production environment before running against production Active Directory, Exchange Online, or Entra ID tenants. No warranty is expressed or implied.
 
 ## 📄 License
 
