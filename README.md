@@ -6,7 +6,7 @@
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Last Commit](https://img.shields.io/github/last-commit/blow-tech/powershell-admin-toolkit)
 
-Production PowerShell scripts for Windows Server, Active Directory, Exchange Online, and Microsoft 365 administration. Built from real incidents and daily operations — not tutorial code.
+Production PowerShell scripts for Windows Server, Active Directory, Exchange Online, and Microsoft 365 administration. Built from real incidents and daily operations not tutorial code.
 
 ---
 
@@ -17,7 +17,7 @@ Production PowerShell scripts for Windows Server, Active Directory, Exchange Onl
 | Active Directory | Account lifecycle, lockout tracing, logon auditing, expiry management, MFA status, risky users |
 | Exchange Online | Mailbox permissions, distribution group membership, shared mailbox reporting, mail flow auditing, PIM role audit |
 | Microsoft Entra | MFA registration gaps, risky user detection, break glass account reporting, sign-in failure analysis |
-| Environment Health | AD replication, DNS, disk, certificates, services — single HTML report output |
+| Environment Health | AD replication, DNS, disk, certificates, services single HTML report output |
 | Backup | AD state backup automation |
 | Inventory | System info collection, environment audit |
 
@@ -160,7 +160,7 @@ See [ActiveDirectory/README.md](ActiveDirectory/README.md) for full parameter re
 ## Security Notes
 
 - Scripts specify minimum required permissions in their `.NOTES` section
-- No hardcoded credentials — scripts use `-Credential` parameters or existing authenticated sessions
+- No hardcoded credentials scripts use `-Credential` parameters or existing authenticated sessions
 - Reporting scripts are read-only by default and do not modify AD or mailbox data
 - Graph-based scripts use delegated or application permissions scoped to the minimum required
 
