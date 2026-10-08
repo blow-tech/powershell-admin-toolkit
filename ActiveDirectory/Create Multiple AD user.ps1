@@ -13,7 +13,7 @@ foreach ($row in $data)
     $firstName = $row.FirstName
     $lastName = $row.LastName
     $password = $row.Password
-    $ouPath = "OU=USERS,OU=BTNHD,DC=btnhd,DC=edu" 
+    $ouPath = "OU=USERS,OU=IT,DC=blow_tech,DC=org" 
     $groups = $row.Groups -split ";"
 
     $username = ($firstName + "." + $lastName).ToLower()
