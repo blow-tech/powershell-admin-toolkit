@@ -23,3 +23,11 @@ jobs:
         if: always()
         shell: pwsh
         run: ./tests/Validate-Weekly.ps1
+      - name: Windows PowerShell November fixtures
+        if: always()
+        shell: powershell
+        run: ./tests/Validate-November.ps1
+      - name: PowerShell 7 November fixtures
+        if: always()
+        shell: pwsh
+        run: ./tests/Validate-November.ps1

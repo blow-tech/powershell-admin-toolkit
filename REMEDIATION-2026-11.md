@@ -1,0 +1,14 @@
+# Script remediation — 8 November 2026
+
+Reconciles the prior unmerged safety branch with main b33d8a3, preserving newer scripts. Nothing is merged or deployed.
+
+New corrections:
+- CleanupInactiveUsers: all-DC queries must complete; per-GUID observations must exist on every DC. Missing/zero/future timestamps are UNKNOWN. New users, adminCount/service-principal accounts and supplied exclusions cannot be acted on. A reviewed CSV of ObjectGUID values and matching SHA256 is mandatory for one explicit action. Default is report-only; each mutation uses ShouldProcess. Use a protected manifest; a digest is not a signature. AD observations are not atomic and do not prove inactivity; privileged/service ownership and all DCs must be validated in a lab.
+- Create Multiple AD user: no module auto-install or workbook passwords. Validated domain/OU and whole-input preflight, collision rejection, preview by default, disabled creation, SecureString provider, terminating creation and immutable GUID group assignment. On a mid-run failure, inspect newly created disabled accounts; no automatic rollback or re-enabling occurs. Validate forest-wide UPN policy separately.
+- Get-Member from Group and Get all servers in AD: explicit server/scope, fixed parsing, one query, structured buffered output, no implicit dependency installation, no output overwrite. Group export now uses CSV rather than XLSX.
+- GetMailboxes and Export All Mailboxes: one maintained collector; expected-tenant existing session, type arrays, terminating errors, single publication. Old password/GUI/auto-connection parameters are removed.
+- MailboxesUserCanAccess: reports direct assignments, preserving actual rights, Deny and inheritance. Queries each mailbox once per permission kind and caches principal resolution. Unknown principals remain explicit; this is NOT an effective-access or nested-group assessment.
+- GetAllSharingLinks: explicit site/certificate scope and owned connection; single UTC snapshot, same-day expiry, mutually exclusive filters, no auto-install/plaintext password/GUI, no publication after a failed query. Selected visible libraries only; inherited/tenant-wide effective access and PnP version compatibility require lab validation.
+- ReportSafety: refuses wrong/ambiguous Exchange sessions and existing report paths; same-directory temporary CSV publication. Pre-provision protected output parents.
+
+Retained September fixes and migration requirements remain documented in REMEDIATION-2026-09.md. New test suite uses mock AD/Exchange operations only. Windows PowerShell 5.1 and PowerShell 7 CI are required; source parsing and mocks are not platform integration. CA/system-state restore, application recovery, Exchange/PnP/Graph permissions and large legacy health/group/inventory collectors remain lab/review gates. No benchmark claims.

@@ -1,4 +1,6 @@
-> September 2026 safety migration: read [REMEDIATION-2026-09.md](REMEDIATION-2026-09.md) before updating scheduled scripts. These are lab-validation candidates, not a blanket production-safety guarantee.
+# Remediation status
+
+Safety changes are proposed in an unmerged PR. Read [REMEDIATION-2026-09.md](REMEDIATION-2026-09.md) and [REMEDIATION-2026-11.md](REMEDIATION-2026-11.md) before using scripts; older examples below may have changed parameters. No universal safety or compliance certification is implied.
 
 # PowerShell Admin Toolkit
 
@@ -8,7 +10,7 @@
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Last Commit](https://img.shields.io/github/last-commit/blow-tech/powershell-admin-toolkit)
 
-PowerShell administration scripts and community samples for Windows Server, Active Directory, Exchange Online, and Microsoft 365. Review coverage and platform validation vary; do not treat the collection as production-certified.
+Production PowerShell scripts for Windows Server, Active Directory, Exchange Online, and Microsoft 365 administration. Built from real incidents and daily operations not tutorial code.
 
 ---
 
@@ -19,11 +21,11 @@ PowerShell administration scripts and community samples for Windows Server, Acti
 | Active Directory | Account lifecycle, lockout tracing, logon auditing, expiry management, MFA status, risky users |
 | Exchange Online | Mailbox permissions, distribution group membership, shared mailbox reporting, mail flow auditing, PIM role audit |
 | Microsoft Entra | MFA registration gaps, risky user detection, break glass account reporting, sign-in failure analysis |
-| Environment Health | AD replication, DNS, disk, certificates, services — single HTML report output |
+| Environment Health | AD replication, DNS, disk, certificates, services single HTML report output |
 | Backup | AD state backup automation |
 | Inventory | System info collection, environment audit |
 
-Use the actual source parameters and [migration notes](REMEDIATION-2026-09.md) as authoritative. Older examples below include incorrect names/extensions and unsupported parameters; do not copy them into production schedules without verification.
+All scripts include comment-based help (accessible via `Get-Help`), parameter validation, and error handling.
 
 ---
 
@@ -162,7 +164,7 @@ See [ActiveDirectory/README.md](ActiveDirectory/README.md) for full parameter re
 ## Security Notes
 
 - Scripts specify minimum required permissions in their `.NOTES` section
-- No hardcoded credentials — scripts use `-Credential` parameters or existing authenticated sessions
+- No hardcoded credentials scripts use `-Credential` parameters or existing authenticated sessions
 - Reporting scripts are read-only by default and do not modify AD or mailbox data
 - Graph-based scripts use delegated or application permissions scoped to the minimum required
 

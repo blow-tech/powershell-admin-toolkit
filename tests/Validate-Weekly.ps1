@@ -1,4 +1,4 @@
-# Only local fixtures and mocked commands. No operational entry point has real modules.
+﻿# Only local fixtures and mocked commands. No operational entry point has real modules.
 [CmdletBinding()]
 param()
 $ErrorActionPreference='Stop'
@@ -143,7 +143,7 @@ foreach ($path in 'scripts/inventory/Audit.ps1','scripts/inventory/systeminfo_re
 }
 Write-Output 'PASS: inventory MSI provider exclusion. All weekly fixtures passed.'
 
-foreach ($path in 'ExchangeOnline/Audit PIM role.ps1','ExchangeOnline/Trace Emails Sent to External Domains','ExchangeOnline/Export All Mailboxes in Microsoft 365 .ps1','ExchangeOnline/Shared Mailbox Size Report','ExchangeOnline/Find_Inactive_Distrib_list.ps1') {
+foreach ($path in 'ExchangeOnline/Audit PIM role.ps1','ExchangeOnline/Trace Emails Sent to External Domains','ExchangeOnline/Shared Mailbox Size Report','ExchangeOnline/Find_Inactive_Distrib_list.ps1') {
     $tokens=$null;$errors=$null
     $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $root $path),[ref]$tokens,[ref]$errors)
     $names=@($ast.ParamBlock.Parameters | ForEach-Object {$_.Name.VariablePath.UserPath})
