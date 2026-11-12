@@ -211,7 +211,7 @@ $DomainControllers = Invoke-CommandSafe { Get-ADDomainController -Filter * -Serv
 
 if ($DomainControllers) {
     foreach ($dc in $DomainControllers) {
-        $osSnapshot = Invoke-CommandSafe { Get-CimInstance -ClassName Win32_OperatingSystem -ComputerName $dc.HostName -ErrorAction Stop }
+        $osSnapshot = Invoke-CommandSafe { Get-CimInstance -ClassName Win32_OperatingSystem -ComputerName $dc.HostName -OperationTimeoutSec 30 -ErrorAction Stop }
         $boot = $osSnapshot.LastBootUpTime
         $os = $osSnapshot.Caption
         $ip = Invoke-CommandSafe { (Resolve-DnsName $dc.HostName -Type A -ErrorAction Stop | Select-Object -First 1 -ExpandProperty IPAddress) }
@@ -376,9 +376,8 @@ Write-Section "Checking Time Service"
 
 foreach ($dc in $DomainControllers) {
     $timeSource = Get-CommandTextOutput -Command "w32tm.exe" -Arguments "/query /computer:$($dc.HostName) /source"
-    $timeConfig = Get-CommandTextOutput -Command "w32tm.exe" -Arguments "/query /computer:$($dc.HostName) /configuration"
 
-    $status = if ($timeSource.ExitCode -eq 0 -and $timeSource.StdOut) { "PASS" } else { "WARN" }
+    $status = if ($timeSource.ExitCode -eq 0 -and $timeSource.StdOut) { "PASS" } else { "UNKNOWN" }
     $NetworkResults += [PSCustomObject]@{
         DomainController = $dc.HostName
         Check            = "Time Source"
@@ -393,15 +392,16 @@ Write-Section "Checking Disk Capacity"
 
 foreach ($dc in $DomainControllers) {
     $drives = Invoke-CommandSafe {
-        Get-CimInstance Win32_LogicalDisk -ComputerName $dc.HostName -Filter "DriveType=3" |
+        Get-CimInstance Win32_LogicalDisk -ComputerName $dc.HostName -Filter "DriveType=3" -OperationTimeoutSec 30 -ErrorAction Stop |
         Select-Object DeviceID,
                       @{N='SizeGB';E={[math]::Round($_.Size/1GB,2)}},
                       @{N='FreeGB';E={[math]::Round($_.FreeSpace/1GB,2)}},
-                      @{N='FreePercent';E={[math]::Round(($_.FreeSpace/$_.Size)*100,2)}}
+                      @{N='FreePercent';E={if ($null -ne $_.Size -and $_.Size -gt 0 -and $null -ne $_.FreeSpace -and $_.FreeSpace -ge 0 -and $_.FreeSpace -le $_.Size) {[math]::Round(($_.FreeSpace/$_.Size)*100,2)} else {$null}}}
     }
 
+    if (-not $drives) { $Results.Add((New-ResultObject -Category 'Capacity' -Check 'Disk enumeration' -Target $dc.HostName -Status 'UNKNOWN' -Details 'No usable disk observations returned.')) }
     foreach ($drive in $drives) {
-        $status = if ($drive.FreePercent -lt 10) { "FAIL" } elseif ($drive.FreePercent -lt 20) { "WARN" } else { "PASS" }
+        $status = if ($null -eq $drive.FreePercent) { 'UNKNOWN' } elseif ($drive.FreePercent -lt 10) { "FAIL" } elseif ($drive.FreePercent -lt 20) { "WARN" } else { "PASS" }
 
         $DiskResults += [PSCustomObject]@{
             DomainController = $dc.HostName
@@ -498,12 +498,7 @@ foreach ($group in $privGroups) {
     }
 }
 
-if ($Forest -and $Forest.RecycleBinEnabled) {
-    $Results.Add((New-ResultObject -Category "Recovery" -Check "AD Recycle Bin" -Target $Forest.Name -Status "PASS" -Details "Recycle Bin is enabled." -Recommendation "No action required."))
-}
-else {
-    $Results.Add((New-ResultObject -Category "Recovery" -Check "AD Recycle Bin" -Target $DomainName -Status "WARN" -Details "Recycle Bin is not enabled or could not be confirmed." -Recommendation "Consider enabling AD Recycle Bin after change review."))
-}
+$Results.Add((New-ResultObject -Category 'Recovery' -Check 'AD Recycle Bin' -Target $DomainName -Status 'UNKNOWN' -Details 'NotAssessed: Get-ADForest does not provide a RecycleBinEnabled property; verify optional-feature enabled scopes and recovery in the lab.'))
 
 if ($trusts) {
     foreach ($trust in $trusts) {

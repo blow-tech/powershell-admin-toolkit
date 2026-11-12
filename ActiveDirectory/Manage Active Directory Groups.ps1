@@ -105,21 +105,9 @@ function ValidateAndImportCsv {
 
 function Exit-Script {
     param([switch]$Exit)
-    if((Test-Path -Path $LogFilePath) -eq "True")
-    {
-        Write-Host `n "The Log file is availble in: " -NoNewline -ForegroundColor Yellow; Write-Host "$LogFilePath"
-        $Prompt = New-Object -ComObject wscript.shell
-        $UserInput = $Prompt.popup("Do you want to open log file?",` 0,"Open Log File",4)
-        if ($UserInput -eq 6)
-        {
-            Invoke-Item "$LogFilePath"
-        }
-    }
-
-    Write-Host `n~~ Script prepared by Admindroid Community ~~`n -ForegroundColor Green
-    Write-Host "~~ Check out " -NoNewline -ForegroundColor Green; Write-Host "admindroid.com" -ForegroundColor Yellow -NoNewline; Write-Host " to access 450+ insightful reports and 70+ management actions across your Active Directory environment. ~~" -ForegroundColor Green `n
-
-    if ($Exit.IsPresent) { if ($script:RunHadFailures) { throw "One or more AD operations failed. Review the log." }; exit 0 }
+    if (Test-Path -LiteralPath $LogFilePath) { Write-Host "Execution log: $LogFilePath" }
+    if ($script:RunHadFailures) { throw 'One or more AD operations failed. Review the execution log.' }
+    if ($Exit) { exit 0 }
 }
 
 function New-ADGroupCustom {
@@ -273,6 +261,10 @@ function Update-GroupManager {
 
     try {
      if($action -eq "set"){
+            $currentManager = (Get-ADGroup -Identity $GroupDN -Properties ManagedBy -ErrorAction Stop @credParams).ManagedBy
+            if ($currentManager -and $currentManager -ne $manager) {
+                throw 'Remove the existing manager and its explicit membership delegation first; replacement cannot safely leave the old grant behind.'
+            }
             Set-ADObject -Identity (Get-ADGroup -Identity $GroupDN -ErrorAction Stop @credParams).ObjectGUID  -Replace @{ managedBy = $manager} -ErrorAction Stop @credParams
             if ([string]::IsNullOrWhiteSpace($enableManagerAccess))
             {
@@ -280,7 +272,7 @@ function Update-GroupManager {
             }
             if($enableManagerAccess -match "[yY]")
             {
-              Update-ManagerAccess -GroupDN $GroupDN -toEnable "Enable"
+              if (-not (Update-ManagerAccess -GroupDN $GroupDN -toEnable 'Enable')) { throw 'Manager was assigned, but delegation was not applied. Review this partial change.' }
             }
         }
     else
@@ -289,7 +281,7 @@ function Update-GroupManager {
         if([string]::IsNullOrWhiteSpace($ManagerDN) ) {
             throw "manager doesn't exist in this group: $($GroupDN )"
         }
-        Update-ManagerAccess -GroupDN $GroupDN -toEnable "Disable"
+        if (-not (Update-ManagerAccess -GroupDN $GroupDN -toEnable 'Disable')) { throw 'Delegation removal was not applied; manager attribute retained.' }
         Set-ADGroup -Identity (Get-ADGroup -Identity $GroupDN -ErrorAction Stop @credParams).ObjectGUID -Clear managedBy -ErrorAction Stop @credParams
     }
     Log-ScriptExecution -Identity $GroupDN -Operation "$action group manager" -Status $true -ExecutionMessage "Group manager is $action successfully." -ErrorMessage ""
@@ -306,7 +298,8 @@ function Update-ManagerAccess
         [string]$GroupDN,
         [string]$toEnable
     )
-    if (-not $script:ChangeCmdlet.ShouldProcess("$GroupDN delegation $toEnable", "Update-ManagerAccess")) { return }
+    if (-not $script:ChangeCmdlet.ShouldProcess("$GroupDN delegation $toEnable", "Update-ManagerAccess")) { return $false }
+    $entry = $null
 
      try {
         $ManagerDN = (Get-ADGroup -Identity $GroupDN -Properties ManagedBy -ErrorAction Stop @credParams).ManagedBy
@@ -358,14 +351,16 @@ function Update-ManagerAccess
         $entry.ObjectSecurity = $acl
         $entry.CommitChanges()
 
-        $entry.Dispose()
 
         Log-ScriptExecution -Identity $GroupDN -Operation "$toEnable manager can update membership list" -Status $true -ExecutionMessage "Manager can update membership list is $($toEnable)d successfully." -ErrorMessage ""
+        return $true
     }
     catch {
         $script:AllSuccess = $false
-        Log-ScriptExecution -Identity $GroupDN -Operation "$toEnable manager can update membership list" -Status $false -ErrorMessage  $_.Exception.Message
+        Log-ScriptExecution -Identity $GroupDN -Operation "$toEnable manager can update membership list" -Status $false -ErrorMessage $_.Exception.Message
+        throw
     }
+    finally { if ($null -ne $entry) { $entry.Dispose() } }
 }
 
 function Update-AccidentalDeletionProtection {
@@ -423,7 +418,7 @@ function Set-PrimaryGroup{
               }
           if($toAddAsMember -match "[yY]")
           {
-            Add-ADGroupMembersCustom  -Member $objDN -GroupDN $PrimaryGroup
+            Add-ADGroupMember -Identity $targetGroup.ObjectGUID -Members $obj.ObjectGUID -ErrorAction Stop @credParams
           }
           else
           {
@@ -509,6 +504,7 @@ function Rename-ADObjects {
 }
 
 $ErrorActionPreference='Stop'
+if ($MultiExecutionMode -and $InputCsvFilePath) { throw 'Bulk CSV requires one action per invocation; multi-action CSV mode is refused.' }
 if(-not $Execute){$WhatIfPreference=$true}
 $script:RunHadFailures=$false
 $script:ChangeCmdlet=$PSCmdlet
@@ -540,6 +536,10 @@ $Location = Get-Location
 $LogFilePath = Join-Path $Location ('ADGroup_Management_Log_'+[guid]::NewGuid().ToString('N')+'.csv')
 
 do {
+    $NewSamAccountName = $null
+    $Value = $null
+    $Count = 0
+    $script:OperationStatus = $null
     if ($Action -eq "0") {
         Write-Host "`n=======================================" -ForegroundColor cyan
         Write-Host "   Active Directory Group Management   " -ForegroundColor Green
@@ -566,9 +566,7 @@ do {
 "@ -ForegroundColor Yellow
 
         $Action = (Read-Host "`nPlease choose the action to continue").Trim()
-        if (($script:RequireCSV -gt 0) -and (!([string]::IsNullOrEmpty($InputCsvFilePath))) -and ($Action -ne "16")) {
-                $InputCsvFilePath = (Read-Host "`nEnter input CSV file path to perform bulk operation, or press 'Enter' to run single operation").Trim()
-        }
+
     }
 
     switch ($Action) {

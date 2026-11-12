@@ -130,3 +130,28 @@ try {
  Assert ($failed -and -not (Test-Path $path)) 'Denied permissions must not publish completed report.'
 } finally {Remove-Item -LiteralPath $temp -Recurse -Force}
 Write-Output 'PASS same-day sharing expiry, denied collections and literal permission identity/rights/deny/cache.'
+. (Functions 'ActiveDirectory/Manage Active Directory Groups.ps1')
+$credParams=@{Server='example.test'};$DomainName='example.test';$Credential=$null
+$script:ChangeCmdlet=[pscustomobject]@{}
+$script:ChangeCmdlet | Add-Member ScriptMethod ShouldProcess {param($target,$action) return $true}
+$global:FixtureGroupWrites=0;$global:FixtureDisposed=0;$global:FixtureFailedLog=0
+function Log-ScriptExecution {param($Status) if(-not $Status){$global:FixtureFailedLog++}}
+function Get-ADGroup {[pscustomobject]@{ManagedBy='CN=old,DC=example,DC=test';ObjectGUID=[guid]'22222222-2222-2222-2222-222222222222'}}
+function Set-ADObject {$global:FixtureGroupWrites++}
+function Set-ADGroup {$global:FixtureGroupWrites++}
+Update-GroupManager -GroupDN fixture -manager 'CN=new,DC=example,DC=test' -action set -enableManagerAccess N
+Assert ($global:FixtureGroupWrites -eq 0 -and $global:FixtureFailedLog -eq 1) 'Manager replacement must refuse leaving the old ACL grant.'
+$global:FixtureEntry=[pscustomobject]@{ObjectSecurity=$null}
+$global:FixtureEntry | Add-Member ScriptMethod Dispose {$global:FixtureDisposed++}
+function New-Object {param([Parameter(Position=0)]$TypeName,[Parameter(Position=1)]$ArgumentList) if($TypeName -like '*DirectoryEntry*'){return $global:FixtureEntry};throw 'Unexpected constructor in fixture.'}
+function Get-ADObject {throw 'Denied manager SID fixture'}
+$failed=$false;try{Update-ManagerAccess -GroupDN fixture -toEnable enable}catch{$failed=$true}
+Assert ($failed -and $global:FixtureDisposed -eq 1) 'Delegation failure must propagate and dispose DirectoryEntry.'
+Remove-Item Function:New-Object
+function Update-ManagerAccess {return $false}
+Update-GroupManager -GroupDN fixture -action removed
+Assert ($global:FixtureGroupWrites -eq 0) 'Declined delegation removal must retain manager attribute.'
+$failed=$false
+try { & (Join-Path $root 'ActiveDirectory/Manage Active Directory Groups.ps1') -DomainName example.test -MultiExecutionMode -InputCsvFilePath nonexistent.csv } catch {$failed=$true}
+Assert $failed 'Multi-action bulk mode must fail before reading or using a stale CSV.'
+Write-Output 'PASS group manager stale-grant refusal, delegation error/disposal, declined removal and bulk-menu refusal.'

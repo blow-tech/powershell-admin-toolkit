@@ -221,6 +221,7 @@ function Get-DCConnectivityChecks {
  if ($dcs.Count -eq 0) { throw 'No DCs retrieved.' }
  foreach ($dc in $dcs) {
  $client=New-Object Net.Sockets.TcpClient
+ $pending=$null
  try {
   $pending=$client.BeginConnect($dc,389,$null,$null)
   if(-not $pending.AsyncWaitHandle.WaitOne(2000)){throw 'LDAP TCP connection timed out.'}
