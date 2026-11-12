@@ -1,7 +1,7 @@
 ﻿<#
 =============================================================================================
 Name:        Manage Active Directory Groups Using PowerShell Script
-Description: This script helps you perform 16 Active Directory group management actions, including both single and bulk operations, to save time and reduce manual effort. 
+Description: This script helps you perform 16 Active Directory group management actions, including both single and bulk operations, to save time and reduce manual effort.
 Version:     1.0
 Website:     o365reports.com
 
@@ -9,13 +9,13 @@ Website:     o365reports.com
 Script Highlights:
 ~~~~~~~~~~~~~~~~~~
 1. Performs 16 actions to manage Active Directory groups.
-2. Allows you to perform specific group management actions directly.   
-3. Enables bulk group management for all actions using CSV input files.  
-4. Enables you to perform multiple actions without repeatedly running the script.  
+2. Allows you to perform specific group management actions directly.
+3. Enables bulk group management for all actions using CSV input files.
+4. Enables you to perform multiple actions without repeatedly running the script.
 5. Requires a preinstalled ActiveDirectory module; SupportsShouldProcess protects all mutation helpers.
-6. Exports execution results to a CSV log file for easier tracking and analysis.   
- 
-For detailed script execution: https://o365reports.com/manage-active-directory-groups-using-powershell/  
+6. Exports execution results to a CSV log file for easier tracking and analysis.
+
+For detailed script execution: https://o365reports.com/manage-active-directory-groups-using-powershell/
 
 =============================================================================================
 #>
@@ -28,8 +28,9 @@ param (
     [switch]$MultiExecutionMode,
     [PSCredential]$Credential,
     [switch]$ExecuteBulk,
+    [switch]$Execute,
     [string]$InputCsvSha256,
-    [string]$DomainName
+    [Parameter(Mandatory)][string]$DomainName
 )
 
 function Connect-AdModule {
@@ -45,6 +46,7 @@ function Log-ScriptExecution {
         [string]$ErrorMessage
     )
 
+    if(-not $Status){$script:RunHadFailures=$true}
     $EventTime = (Get-Date).ToLocalTime()
     $CSVEntry = [PSCustomObject]@{
         "Event Time"    = $EventTime
@@ -104,7 +106,7 @@ function ValidateAndImportCsv {
 function Exit-Script {
     param([switch]$Exit)
     if((Test-Path -Path $LogFilePath) -eq "True")
-    {   
+    {
         Write-Host `n "The Log file is availble in: " -NoNewline -ForegroundColor Yellow; Write-Host "$LogFilePath"
         $Prompt = New-Object -ComObject wscript.shell
         $UserInput = $Prompt.popup("Do you want to open log file?",` 0,"Open Log File",4)
@@ -116,8 +118,8 @@ function Exit-Script {
 
     Write-Host `n~~ Script prepared by Admindroid Community ~~`n -ForegroundColor Green
     Write-Host "~~ Check out " -NoNewline -ForegroundColor Green; Write-Host "admindroid.com" -ForegroundColor Yellow -NoNewline; Write-Host " to access 450+ insightful reports and 70+ management actions across your Active Directory environment. ~~" -ForegroundColor Green `n
-    
-    if ($Exit.IsPresent) { if (-not $script:AllSuccess) { throw "One or more AD operations failed. Review the log." }; exit 0 }
+
+    if ($Exit.IsPresent) { if ($script:RunHadFailures) { throw "One or more AD operations failed. Review the log." }; exit 0 }
 }
 
 function New-ADGroupCustom {
@@ -228,11 +230,12 @@ function Restore-ADGroupByName {
 
 
     try {
-           
+
             $RecycleBinEnable=(Get-ADOptionalFeature -Identity 'Recycle Bin Feature' @credParams ).EnabledScopes
-            $del = Get-ADObject -Filter "samAccountName -eq '$($GroupName.Replace("'", "''"))' -and ObjectClass -eq 'group'" -IncludeDeletedObjects -Properties lastKnownParent, whenChanged @credParams | Sort-Object whenChanged -Descending | Select-Object -First 1
-            
-            if ($del) 
+            $del = Get-ADObject -Filter "samAccountName -eq '$($GroupName.Replace("'", "''"))' -and ObjectClass -eq 'group'" -IncludeDeletedObjects -Properties lastKnownParent, whenChanged @credParams
+            if(@($del).Count -gt 1){throw 'Ambiguous deleted group name. Restore by a separately reviewed immutable GUID.'}
+
+            if ($del)
             {
                 if (-not $del.lastKnownParent) {
                     throw "Cannot restore. lastKnownParent is missing."
@@ -251,7 +254,7 @@ function Restore-ADGroupByName {
             else {
                 throw "Not found in deleted objects."
             }
-       
+
     }
     catch {
         $script:AllSuccess = $false
@@ -264,7 +267,7 @@ function Update-GroupManager {
         [string]$manager,
         [string]$GroupDN,
         [string]$enableManagerAccess,
-        [string]$action       
+        [string]$action
     )
     if (-not $script:ChangeCmdlet.ShouldProcess("$GroupDN manager $manager", "Update-GroupManager")) { return }
 
@@ -301,7 +304,7 @@ function Update-ManagerAccess
 {
     param (
         [string]$GroupDN,
-        [string]$toEnable       
+        [string]$toEnable
     )
     if (-not $script:ChangeCmdlet.ShouldProcess("$GroupDN delegation $toEnable", "Update-ManagerAccess")) { return }
 
@@ -312,7 +315,7 @@ function Update-ManagerAccess
         }
         if ($null -eq $Credential)
         {
-            $entry = New-Object System.DirectoryServices.DirectoryEntry("LDAP://$($GroupDN)")
+            $entry = New-Object System.DirectoryServices.DirectoryEntry("LDAP://$($DomainName)/$($GroupDN)")
         }
         else
         {
@@ -326,14 +329,14 @@ function Update-ManagerAccess
             throw "Object '$ManagerDN' cannot be delegated permissions."
         }
 
-    
+
         $identity = New-Object System.Security.Principal.SecurityIdentifier(
             $manager.objectSID
         )
-        $schemaPath = (Get-ADRootDSE @credParams).SchemaNamingContext 
+        $schemaPath = (Get-ADRootDSE @credParams).SchemaNamingContext
         $memberAttr = Get-ADObject -SearchBase $schemaPath -LDAPFilter "(lDAPDisplayName=member)" -Properties schemaIDGUID @credParams
         $memberGuid = [Guid]::New([byte[]]$memberAttr.schemaIDGUID)
-   
+
         $rule = New-Object System.DirectoryServices.ActiveDirectoryAccessRule (
             $identity,
             [System.DirectoryServices.ActiveDirectoryRights]::WriteProperty,
@@ -342,8 +345,8 @@ function Update-ManagerAccess
             [System.DirectoryServices.ActiveDirectorySecurityInheritance]::None
         )
 
-                
-       
+
+
        if($toEnable -eq "enable")
        {
         $acl.AddAccessRule($rule)
@@ -351,12 +354,12 @@ function Update-ManagerAccess
        else
        {
         $acl.RemoveAccessRuleSpecific($rule)
-       } 
+       }
         $entry.ObjectSecurity = $acl
         $entry.CommitChanges()
-    
-        $entry.Dispose() 
-    
+
+        $entry.Dispose()
+
         Log-ScriptExecution -Identity $GroupDN -Operation "$toEnable manager can update membership list" -Status $true -ExecutionMessage "Manager can update membership list is $($toEnable)d successfully." -ErrorMessage ""
     }
     catch {
@@ -396,9 +399,9 @@ function Set-PrimaryGroup{
         $targetGroup = Get-ADGroup -Identity $PrimaryGroup -Properties SID,GroupScope, GroupCategory -ErrorAction Stop @credParams
 
 
-        if (($targetGroup.GroupCategory -ne "Security") -or ($targetGroup.GroupScope -eq "DomainLocal")) 
+        if (($targetGroup.GroupCategory -ne "Security") -or ($targetGroup.GroupScope -eq "DomainLocal"))
         {
-           throw "This group type or scope cannot be set as the Primary Group"            
+           throw "This group type or scope cannot be set as the Primary Group"
         }
         $targetSID = if ($targetGroup.SID -is [System.Security.Principal.SecurityIdentifier]) {
                         $targetGroup.SID
@@ -411,9 +414,9 @@ function Set-PrimaryGroup{
          Log-ScriptExecution -Identity $PrimaryGroup -Operation "Set Primary Group For $($obj.ObjectClass)" -Status $true -ExecutionMessage "Group is already a primary group of given object."
          return
         }
-        if ($obj.MemberOf -notcontains $PrimaryGroup) 
+        if ($obj.MemberOf -notcontains $PrimaryGroup)
         {
-             if ([string]::IsNullOrWhiteSpace($toAddAsMember)) 
+             if ([string]::IsNullOrWhiteSpace($toAddAsMember))
              {
                   Write-Host "`n$($obj.ObjectClass) is not a member of $($targetGroup.Name), would you like me to add the $($obj.ObjectClass) to group and execute this action?"
                   $toAddAsMember=(Read-Host "[Y] Yes [N] No").Trim()
@@ -485,7 +488,7 @@ function Rename-ADObjects {
     param (
         [string]$Name,
         [string]$NewSamAccountName,
-        [string]$Identity       
+        [string]$Identity
     )
     if (-not $script:ChangeCmdlet.ShouldProcess("$Identity new name $Name", "Rename-ADObjects")) { return }
 
@@ -495,7 +498,7 @@ function Rename-ADObjects {
             Set-ADGroup -Identity $Identity -SamAccountName $NewSamAccountName @credParams
             Log-ScriptExecution -Identity $Identity -Operation "rename group SamAccountName  to '$($NewSamAccountName)'" -Status $true
         }
-        Rename-ADObject -Identity $Identity -NewName $Name @credParams        
+        Rename-ADObject -Identity $Identity -NewName $Name @credParams
         Log-ScriptExecution -Identity $Identity -Operation "rename group to '$($Name)'" -Status $true -ExecutionMessage "Group:$($Identity) is renamed successfully."
 
     }
@@ -506,6 +509,8 @@ function Rename-ADObjects {
 }
 
 $ErrorActionPreference='Stop'
+if(-not $Execute){$WhatIfPreference=$true}
+$script:RunHadFailures=$false
 $script:ChangeCmdlet=$PSCmdlet
 $credParams = @{}
 $script:CredentialBasedExecution = ($null -ne $Credential)
@@ -513,11 +518,14 @@ if ($Credential) { $credParams.Credential=$Credential }
 if ($DomainName) { $credParams.Server=$DomainName }
 $script:ApprovedCsv=$null
 if ($InputCsvFilePath) {
+    $bytes=[IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $InputCsvFilePath).ProviderPath)
     if (-not $WhatIfPreference) {
-        if (-not $ExecuteBulk -or $InputCsvSha256 -notmatch '^[a-fA-F0-9]{64}$') { throw 'Bulk execution requires -ExecuteBulk and the reviewed -InputCsvSha256. Use -WhatIf to plan first.' }
-        if ((Get-FileHash -LiteralPath $InputCsvFilePath -Algorithm SHA256).Hash -ne $InputCsvSha256) { throw 'CSV digest does not match the reviewed plan.' }
+        if (-not $ExecuteBulk -or $InputCsvSha256 -notmatch '^[a-fA-F0-9]{64}$') { throw 'Bulk execution requires Execute, ExecuteBulk and reviewed InputCsvSha256.' }
+        $sha=[Security.Cryptography.SHA256]::Create()
+        try{$digest=([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-','')}finally{$sha.Dispose()}
+        if($digest -ne $InputCsvSha256){throw 'CSV digest mismatch.'}
     }
-    $script:ApprovedCsv=@(Import-Csv -LiteralPath $InputCsvFilePath -ErrorAction Stop)
+    $script:ApprovedCsv=@([Text.Encoding]::UTF8.GetString($bytes).TrimStart([char]0xFEFF) | ConvertFrom-Csv)
     $duplicates=@($script:ApprovedCsv | ConvertTo-Csv -NoTypeInformation | Select-Object -Skip 1 | Group-Object | Where-Object Count -gt 1)
     if ($duplicates.Count -gt 0) { throw 'Duplicate input rows refused.' }
 }
@@ -529,7 +537,7 @@ $script:AllSuccess = $true
 $script:ActionName = ""
 $script:RequireCSV = 0
 $Location = Get-Location
-$LogFilePath = "$Location\ADGroup_Management_Log_$(Get-Date -Format 'yyyy-MMM-dd-ddd_hh-mm_tt').csv"
+$LogFilePath = Join-Path $Location ('ADGroup_Management_Log_'+[guid]::NewGuid().ToString('N')+'.csv')
 
 do {
     if ($Action -eq "0") {
@@ -538,23 +546,23 @@ do {
         Write-Host "=======================================`n" -ForegroundColor cyan
         Write-Host "You can also perform bulk operations by passing the -InputCSVFilePath parameter during script execution.`n" -ForegroundColor DarkYellow
         Write-Host @"
-        1. Create group(s) 
-        2. Add member(s) to group(s) 
+        1. Create group(s)
+        2. Add member(s) to group(s)
         3. Set manager(s) to group(s)
-        4. Enable group manager can modify the member list 
+        4. Enable group manager can modify the member list
         5. Enable accidental deletion protection for group(s)
-        6. Set primary group(s) 
-        7. Move group(s) from one OU to another OU 
-        8. Rename group(s) 
-        9. Update group property(s) 
-       10. Disable group manager can modify the member list 
+        6. Set primary group(s)
+        7. Move group(s) from one OU to another OU
+        8. Rename group(s)
+        9. Update group property(s)
+       10. Disable group manager can modify the member list
        11. Disable accidental deletion protection for group(s)
        12. Remove group(s) manager(s)
        13. Remove members from group(s)
-       14. Delete group(s) 
-       15. Restore group(s) 
+       14. Delete group(s)
+       15. Restore group(s)
        16. Exit
-       
+
 "@ -ForegroundColor Yellow
 
         $Action = (Read-Host "`nPlease choose the action to continue").Trim()
@@ -607,11 +615,11 @@ do {
                 $manager = (Read-Host -Prompt "`nEnter the distinguished name of the manager").Trim()
                 $GroupDN = (Read-Host -Prompt "`nEnter the distinguished name of the group").Trim()
                 Update-GroupManager -manager $manager -GroupDN $GroupDN -action "set"
-            } 
+            }
             else {
                 $enableManagerAccess=(Read-Host "Do you want to enable 'Manager can update membership list'?[Y] Yes [N] No").Trim()
                 ValidateAndImportCsv -FilePath $InputCsvFilePath -RequiredColumns "Manager", "GroupDN" | ForEach-Object {
-                    Write-Progress -Activity "Processed groups count: $($Count)" -Status "Currently Processing $($_.GroupDN)" -PercentComplete 100                    
+                    Write-Progress -Activity "Processed groups count: $($Count)" -Status "Currently Processing $($_.GroupDN)" -PercentComplete 100
                     Update-GroupManager -manager $_.Manager -GroupDN $_.GroupDN -action "set" -enableManagerAccess $enableManagerAccess
                     $Count++
                 }
@@ -620,13 +628,13 @@ do {
             break
         }
 
-       
+
         "4" {
             $script:ActionName = "Enable group manager can modify the member list"
             if ([string]::IsNullOrWhiteSpace($InputCsvFilePath)) {
                 $GroupDN = (Read-Host -Prompt "Enter the distinguished name of the group").Trim()
                 Update-ManagerAccess -GroupDN $GroupDN -toEnable "enable"
-            } 
+            }
             else {
                 ValidateAndImportCsv -FilePath $InputCsvFilePath -RequiredColumns "GroupDN" | ForEach-Object {
                     Write-Progress -Activity "Processed groups count: $($Count)" -Status "Currently Processing $($_.GroupDN)" -PercentComplete 100
@@ -637,7 +645,7 @@ do {
             }
             break
         }
-       
+
         "5" {
             $script:ActionName = "Enable accidental deletion protection for group(s)"
             if ([string]::IsNullOrWhiteSpace($InputCsvFilePath)) {
@@ -653,7 +661,7 @@ do {
             }
             break
         }
-      
+
 
         "6" {
             $script:ActionName = "Set primary group(s)"
@@ -699,13 +707,13 @@ do {
                 $GroupDN = (Read-Host -Prompt "`nEnter the distinguished name of the group").Trim()
                 $newName = (Read-Host -Prompt "`nEnter the new name").Trim()
                 $change= (Read-Host "Would you like to change the SAM account name? Y (yes) or N (no)").Trim()
-               
+
                 if($change -match "[yY]")
                 {
                  $NewSamAccountName=(Read-Host -Prompt "`nEnter the new SamAccountName").Trim()
                 }
                 Rename-ADObjects -Name $newName -Identity $GroupDN -NewSamAccountName $NewSamAccountName
-            } 
+            }
             else {
                 ValidateAndImportCsv -FilePath $InputCsvFilePath -RequiredColumns "GroupDN", "NewName" , "NewSamAccountName" | ForEach-Object {
                     Write-Progress -Activity "Processed groups count: $($Count)" -Status "Currently Processing $($_.GroupDN)" -PercentComplete 100
@@ -741,7 +749,7 @@ do {
             if ([string]::IsNullOrWhiteSpace($InputCsvFilePath)) {
                 $GroupDN = (Read-Host -Prompt "`nEnter the distinguished name of the group").Trim()
                 Update-ManagerAccess -GroupDN $GroupDN -toEnable "disable"
-            } 
+            }
             else {
                 ValidateAndImportCsv -FilePath $InputCsvFilePath -RequiredColumns "GroupDN" | ForEach-Object {
                     Write-Progress -Activity "Processed groups count: $($Count)" -Status "Currently Processing $($_.GroupDN)" -PercentComplete 100
@@ -774,7 +782,7 @@ do {
             if ([string]::IsNullOrWhiteSpace($InputCsvFilePath)) {
                 $GroupDN = (Read-Host -Prompt "`nEnter the distinguished name of the group").Trim()
                 Update-GroupManager -GroupDN $GroupDN -action "removed"
-            } 
+            }
             else {
                 ValidateAndImportCsv -FilePath $InputCsvFilePath -RequiredColumns "GroupDN" | ForEach-Object {
                     Write-Progress -Activity "Processed groups count: $($Count)" -Status "Currently Processing $($_.GroupDN)" -PercentComplete 100
@@ -855,19 +863,19 @@ do {
         }
     }
 
-    if ($MultiExecutionMode.IsPresent -and ![string]::IsNullOrWhiteSpace($InputCsvFilePath)) { 
+    if ($MultiExecutionMode.IsPresent -and ![string]::IsNullOrWhiteSpace($InputCsvFilePath)) {
         if ($script:AllSuccess) {
             Write-Host "`n$ActionName completed successfully for all groups." -ForegroundColor Green
         }
         else {
             Write-Host "`n$ActionName completed with some failures. Check the log file: $LogFilePath" -ForegroundColor red
-        } 
+        }
         $script:AllSuccess = $true
         $script:ActionName = ""
     }
 
     if ($MultiExecutionMode.IsPresent)
-    { 
+    {
         $Action = "0"
         $script:RequireCSV = 1
     }
@@ -881,4 +889,4 @@ $script:OperationStatus = $null; $script:Message = ""
 
 Exit-Script
 
-if (-not $script:AllSuccess) { throw "One or more AD operations failed; review the execution log." }
+if ($script:RunHadFailures) { throw "One or more AD operations failed; review the execution log." }

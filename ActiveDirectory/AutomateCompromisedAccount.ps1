@@ -15,6 +15,7 @@ param(
     [string[]]$UPNs,
     [Parameter(Mandatory)][ValidateSet(1,2,3,4,5,6,7,8)][int[]]$Actions,
     [Parameter(Mandatory)][string]$EvidenceDirectory,
+    [switch]$Execute,
     [scriptblock]$PasswordHandoff
 )
 $ErrorActionPreference='Stop'
@@ -67,7 +68,7 @@ try {
  foreach ($user in $users) {
   foreach ($action in @($Actions | Select-Object -Unique)) {
    $target="$($user.UserPrincipalName) [$($user.Id)] tenant=$TenantId"
-   if ($action -in 1,2,3,5,7 -and -not $PSCmdlet.ShouldProcess($target,"Compromised-account action $action")) {
+   if ($action -in 1,2,3,5,7 -and (-not $Execute -or -not $PSCmdlet.ShouldProcess($target,"Compromised-account action $action"))) {
     $results.Add([pscustomobject]@{UserId=$user.Id; Action=$action; Status='Skipped/WhatIf'}); continue
    }
    $evidence=Join-Path $directory.FullName "$run-$($user.Id)-$action.clixml"

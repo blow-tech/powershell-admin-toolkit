@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Monitors system resources in real-time with customizable thresholds and alerts.
 
@@ -85,12 +85,13 @@ param(
 )
 
 $ErrorActionPreference='Stop'
+if ([math]::Ceiling($Duration*60.0/$Interval) -gt 10000) { throw 'Sample budget exceeds 10000. Increase Interval or reduce Duration.' }
 # Ensure export directory exists
 if (-not (Test-Path $ExportPath)) {
     New-Item -ItemType Directory -Path $ExportPath -Force | Out-Null
 }
 
-$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$timestamp = (Get-Date -Format 'yyyyMMdd_HHmmss') + '-' + [guid]::NewGuid().ToString('N')
 $exportFile = Join-Path $ExportPath "SystemResources_$timestamp"
 $monitoringData = New-Object 'System.Collections.Generic.List[object]'
 $startTime = Get-Date
@@ -104,7 +105,7 @@ function Get-SystemMetrics {
             Where-Object { $_.InstanceName -ne '_Total' } |
             Select-Object @{Name='Drive';Expression={$_.InstanceName}},
                         @{Name='FreeSpace';Expression={$_.CookedValue}}
-    
+
     $network = (Get-Counter '\Network Interface(*)\Bytes Total/sec' -ErrorAction Stop).CounterSamples |
                Where-Object { $_.InstanceName -notmatch 'isatap' } |
                Select-Object @{Name='Interface';Expression={$_.InstanceName}},
@@ -121,9 +122,9 @@ function Get-SystemMetrics {
 
 function Test-Thresholds {
     param($metrics)
-    
+
     $alerts = @()
-    
+
     if ($metrics.CPU -gt $CPUThreshold) {
         $alerts += "CPU usage is at $($metrics.CPU)% (Threshold: $CPUThreshold%)"
     }
@@ -135,18 +136,18 @@ function Test-Thresholds {
             $alerts += "Drive $($drive.Drive) usage is at $([math]::Round(100 - $drive.FreeSpace, 2))% (Threshold: $DiskThreshold%)"
         }
     }
-    
+
     return $alerts
 }
 
 try {
     Write-Host "Starting system resource monitoring..."
     Write-Host "Press Ctrl+C to stop monitoring"
-    
+
     while (-not $endTime -or (Get-Date) -lt $endTime) {
         $metrics = Get-SystemMetrics
         $monitoringData.Add($metrics)
-        
+
         # Display current metrics
         Clear-Host
         Write-Host "System Resource Monitor - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
@@ -161,14 +162,14 @@ try {
         $metrics.Network | ForEach-Object {
             Write-Host "  $($_.Interface): $([math]::Round($_.BytesPerSec/1MB, 2)) MB/s"
         }
-        
+
         # Check thresholds and display alerts
         $alerts = Test-Thresholds -metrics $metrics
         if ($alerts) {
             Write-Host "`nAlerts:"
             $alerts | ForEach-Object { Write-Host "- $_" -ForegroundColor Red }
         }
-        
+
         Start-Sleep -Seconds $Interval
     }
 } catch {
@@ -184,12 +185,12 @@ try {
                     Export-Csv -LiteralPath "$exportFile.csv" -NoTypeInformation -NoClobber
             }
             "XML" {
-                $monitoringData | Export-Clixml -Path "$exportFile.xml"
+                $monitoringData | Export-Clixml -Path "$exportFile.xml" -NoClobber
             }
             "JSON" {
-                $monitoringData | ConvertTo-Json -Depth 10 | Out-File "$exportFile.json"
+                $monitoringData | ConvertTo-Json -Depth 10 | Out-File "$exportFile.json" -NoClobber
             }
         }
         Write-Host "`nMonitoring data exported to $exportFile.$($ExportFormat.ToLower())"
     }
-} 
+}

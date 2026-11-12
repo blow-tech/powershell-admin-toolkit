@@ -1,13 +1,11 @@
-## Union (Get-ADUser -filter {enabled -eq $true} -Properties employeenumber,passwordlastset | ? {$_.Employeenumber -and ($_.PasswordLastSet -gt [DateTime]::Now.Subtract([TimeSpan]::FromDays(180)))}).Count
-## UAP (Get-ADUser -filter {enabled -eq $true} -Properties employeenumber,passwordlastset | ? {$_.Employeenumber -and ($_.DistinguishedName -like '*AP&S*') -and ($_.PasswordLastSet -gt [DateTime]::Now.Subtract([TimeSpan]::FromDays(180)))}).Count
-
-$MaxAge = 180
-
-$rules = @(
-    { $_.PasswordLastSet -lt [DateTime]::Now.Subtract([TimeSpan]::FromDays($MaxAge)) },
-    { $_.LastLogonDate -lt [DateTime]::Now.Subtract([TimeSpan]::FromDays($MaxAge)) },
-    { $_.Enabled -eq $false },
-    { $_.PasswordExpired -eq $true }
-)
-
-Get-AdUser -Filter * -Properties PasswordLastSet,LastLogonDate
+﻿# Read-only password-age evidence. Missing dates are UNKNOWN; no cleanup eligibility implied.
+[CmdletBinding()]
+param([Parameter(Mandatory=$true)][string]$Server,
+ [Parameter(Mandatory=$true)][string]$SearchBase,
+ [ValidateRange(1,36500)][int]$MaxAge=180)
+$ErrorActionPreference='Stop'
+Import-Module ActiveDirectory -ErrorAction Stop
+$cutoff=[datetime]::UtcNow.AddDays(-$MaxAge)
+Get-ADUser -Server $Server -SearchBase $SearchBase -Filter * -Properties PasswordLastSet,LastLogonDate -ErrorAction Stop |
+ Where-Object {-not $_.PasswordLastSet -or $_.PasswordLastSet.ToUniversalTime() -lt $cutoff} |
+ Select-Object ObjectGUID,SamAccountName,Enabled,PasswordLastSet,LastLogonDate,@{n='EvidenceState';e={if($_.PasswordLastSet){'PasswordOlderThanCutoff'}else{'UNKNOWN'}}}

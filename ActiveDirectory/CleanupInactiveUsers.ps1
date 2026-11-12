@@ -51,7 +51,7 @@ function Get-InactivityPlan {
         $reason='Eligible'
         if (-not $complete -or -not $last -or $last -gt $now) { $reason='UNKNOWN' }
         elseif (-not $u.whenCreated -or ([datetime]$u.whenCreated).ToUniversalTime() -ge $cutoff -or $last -ge $cutoff) { $reason='Recent' }
-        elseif ($u.adminCount -eq 1 -or @($u.servicePrincipalName).Count -gt 0 -or $ExcludeGuid -contains [guid]$u.ObjectGUID -or [string]$u.SID -match '-(500|501|502)$') { $reason='Excluded' }
+        elseif ($u.adminCount -eq 1 -or @($u.servicePrincipalName | Where-Object { $_ }).Count -gt 0 -or $ExcludeGuid -contains [guid]$u.ObjectGUID -or [string]$u.SID -match '-(500|501|502)$') { $reason='Excluded' }
         [pscustomobject]@{ObjectGUID=$id;SamAccountName=$u.SamAccountName;DistinguishedName=$u.DistinguishedName;Enabled=$u.Enabled;LastLogonUtc=$last;Status=$reason;DomainControllers=($names -join ';')}
     }
 }

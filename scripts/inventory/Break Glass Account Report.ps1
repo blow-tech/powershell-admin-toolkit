@@ -1,4 +1,4 @@
-<#
+﻿<#
 =============================================================================================
 Name:        Active Directory Break Glass Account Readiness Score PowerShell Script
 Description: Runs 13 read-only survivability checks on break-glass accounts in Active Directory, generating a weighted score and CSV report, with unverifiable items flagged for manual review.
@@ -9,15 +9,17 @@ Script Highlights:
 ~~~~~~~~~~~~~~~~~~
 1. Runs 13 survivability checks on designated break-glass accounts to assess emergency readiness.
 2. Generates a weighted score out of 100% for each break glass account to enable quick risk analysis.
-3. Automatically installs the Active Directory PowerShell module via RSAT if it is not already available. 
-4. Automatically exports an output CSV log after each execution for easy tracking and analysis.  
-   
+3. Requires preinstalled ActiveDirectory tools; makes no platform changes.
+4. Automatically exports an output CSV log after each execution for easy tracking and analysis.
+
 =============================================================================================
 #>
 
 [CmdletBinding()]
 param(
-    [string[]]$Accounts,
+    [Parameter(Mandatory)][string[]]$Accounts,
+    [Parameter(Mandatory)][string]$Server,
+    [Parameter(Mandatory)][string]$ReportPath,
 
     [string[]]$DomainControllers,
 
@@ -26,85 +28,16 @@ param(
     [int]$MaxPasswordAgeDays = 180
 )
 
-# --- Module check -------------------------------------------------------------
-
-function Test-IsAdministrator {
-    $CurrentPrincipal = [Security.Principal.WindowsPrincipal]::new(
-        [Security.Principal.WindowsIdentity]::GetCurrent()
-    )
-    $CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
-
-if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
-    $OsCaption = (Get-CimInstance -ClassName Win32_OperatingSystem).Caption
-
-    # Home editions cannot install RSAT.
-    if ($OsCaption -match 'Home') {
-        Write-Host "The ActiveDirectory module (RSAT) is not supported on Windows Home edition."
-        Write-Host "Run this script from Windows 10/11 Pro, Enterprise, or Education, or from a domain controller."
-        return
-    }
-
-    # Single source of truth: the install command lives in a script block.
-    # Its text is shown to the user for manual install; the same block is
-    # invoked when the script performs the install itself.
-    $InstallScript = if ($OsCaption -like '*Server*') {
-        { Install-WindowsFeature -Name RSAT-AD-PowerShell }
-    }
-    else {
-        { Add-WindowsCapability -Online -Name 'Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0' }
-    }
-    $ManualInstallCommand = $InstallScript.ToString().Trim()
-
-    # Installing RSAT requires elevation. Detect this before prompting Y/N
-    if (-not (Test-IsAdministrator)) {
-        Write-Host "The ActiveDirectory module is not installed."
-        Write-Host "Installing it requires Administrator privileges (one-time per workstation; any user can use the module afterwards)." -ForegroundColor Yellow
-        Write-Host "`nTo install the module manually, run the cmdlet: $ManualInstallCommand"
-        return
-    }
-
-    $InstallConfirmation = Read-Host "The ActiveDirectory module is not installed. Install it now? (Y/N)"
-
-    if ($InstallConfirmation -ne 'Y') {
-        Write-Host "`nActiveDirectory module is required. Exiting."
-        return
-    }
-
-    try {
-        & $InstallScript | Out-Null
-    }
-    catch {
-        Write-Host "Module installation failed: $_"
-        Write-Host "To install manually, run the cmdlet: $ManualInstallCommand"
-        return
-    }
-}
-
-Import-Module ActiveDirectory
-
-# --- Resolve break-glass accounts --------------------------------------------
-
-# Outer: -Accounts not passed at script invocation. Fall back to interactive prompt.
-if (-not $Accounts) {
-    $AccountsInput = Read-Host "Enter break-glass account SamAccountNames (comma-separated)"
-    $Accounts = $AccountsInput -split ',' |
-        ForEach-Object { $_.Trim() } |
-        Where-Object { $_ }
-
-    # Inner: prompt produced nothing usable (blank Enter, only commas, only whitespace).
-    if (-not $Accounts) {
-        Write-Host "`nNo account names provided. Exiting." -ForegroundColor Yellow
-        return
-    }
-}
-
-# --- Report setup -------------------------------------------------------------
-
-$ReportPath = Join-Path -Path (Get-Location) -ChildPath "ActiveDirectory_BreakGlassAcc_Score_$((Get-Date -format yyyy-MMM-dd-ddd` hh-mm` tt).ToString()).csv"
+$ErrorActionPreference='Stop'
+Import-Module ActiveDirectory -ErrorAction Stop
+. (Join-Path $PSScriptRoot '../common/ReportSafety.ps1')
+$Accounts=@($Accounts | Where-Object { $_ } | Select-Object -Unique)
+if(-not $Accounts.Count){throw 'Supply explicit account identities.'}
+$AuditRows=New-Object 'System.Collections.Generic.List[object]'
 
 # hash table to plan the Output
 $CheckCatalog = @{
+    AccountAvailable = @{Name='Enabled, unlocked and unexpired';Weight=3;Evidence=@{Pass='Current account availability flags permit logon; actual recovery access not tested.';Fail='Disabled, locked out or expired account.'}}
     ExcludedFromProtectedUsers  = @{
         Name   = 'Excluded from Protected Users group'
         Weight = 3
@@ -212,13 +145,13 @@ function Add-AuditResult {
         }
     }
 
-    [PSCustomObject]@{
+    $AuditRows.Add([PSCustomObject]@{
         'Account'    = $Account
         'Checkpoint' = $Definition.Name
         'Weight'     = $Definition.Weight
         'Result'     = $Result
         'Evidence'   = $Evidence
-    } | Export-Csv -Path $script:ReportPath -Append -NoTypeInformation
+    })
 }
 
 function Get-MostRecentLogonAcrossAllDcs {
@@ -228,6 +161,7 @@ function Get-MostRecentLogonAcrossAllDcs {
         [Parameter(Mandatory)][string[]]$DomainControllerHostNames
     )
 
+    $script:LastLogonComplete = $true
     $DcCounter = 0
     $DcTotal   = $DomainControllerHostNames.Count
 
@@ -238,12 +172,14 @@ function Get-MostRecentLogonAcrossAllDcs {
                        -PercentComplete (($DcCounter / $DcTotal) * 100)
 
         try {
-            $DcResult = Get-ADUser -Identity $AccountName -Properties lastLogon -Server $DcHostname
+            $DcResult = Get-ADUser -Identity $AccountName -Properties lastLogon -Server $DcHostname -ErrorAction Stop
+            if (-not $DcResult -or -not $DcResult.lastLogon) { $script:LastLogonComplete=$false }
             if ($DcResult.lastLogon -and $DcResult.lastLogon -gt 0) {
                 [DateTime]::FromFileTime($DcResult.lastLogon)
             }
         }
         catch {
+            $script:LastLogonComplete=$false
             Write-Host "Could not query $DcHostname for $AccountName : $_"
         }
     }
@@ -272,7 +208,7 @@ foreach ($AccountName in $Accounts) {
     try {
         $AccountData[$AccountName] = Get-ADUser -Identity $AccountName -Properties `
             SmartcardLogonRequired, PasswordNeverExpires, PasswordLastSet,
-            LastLogonDate, LogonWorkstations, MemberOf, SID
+            LastLogonDate, LogonWorkstations, MemberOf, SID,Enabled,LockedOut,AccountExpirationDate,ObjectGUID -Server $Server -ErrorAction Stop
     }
     catch {
         Write-Host "Could not retrieve $AccountName : $_" -foregroundcolor Red
@@ -285,7 +221,7 @@ Write-Progress -Activity "Loading account data" -Completed
 
 $AllDomainControllers = @()
 try {
-    $AllDomainControllers = @(Get-ADDomainController -Filter * | Select-Object -ExpandProperty HostName)
+    $AllDomainControllers = @(Get-ADDomainController -Filter * -Server $Server -ErrorAction Stop | Select-Object -ExpandProperty HostName)
    # Write-Host "Found $($AllDomainControllers.Count) domain controller(s)."
 }
 catch {
@@ -305,7 +241,7 @@ $GlobalAccountLabel = 'Common Checks'
 $ProtectedUsersMembers    = $null
 $ProtectedUsersFetchError = $null
 try {
-    $ProtectedUsersMembers = Get-ADGroupMember -Identity 'Protected Users' |
+    $ProtectedUsersMembers = Get-ADGroupMember -Identity 'Protected Users' -Server $Server -ErrorAction Stop |
         Select-Object -ExpandProperty SamAccountName
 }
 catch {
@@ -323,8 +259,11 @@ foreach ($AccountName in $Accounts) {
     $Account = $AccountData[$AccountName]
     if (-not $Account) {
      #   Write-Host "Skipping per-account checks for $AccountName (Account is not found)."
+        foreach($key in $CheckCatalog.Keys){Add-AuditResult -Account $AccountName -CheckpointKey $key -Result Error -Evidence 'Account resolution failed; no readiness conclusion.'}
         continue
     }
+    $available=$Account.Enabled -and -not $Account.LockedOut -and (-not $Account.AccountExpirationDate -or $Account.AccountExpirationDate -gt (Get-Date))
+    Add-AuditResult -Account $AccountName -CheckpointKey AccountAvailable -Result $(if($available){'Pass'}else{'Fail'})
 #Check for proetected user group membership
     if ($null -ne $ProtectedUsersMembers) {
         if ($ProtectedUsersMembers -contains $AccountName) {
@@ -357,6 +296,7 @@ foreach ($AccountName in $Accounts) {
     Add-AuditResult -Account $AccountName -CheckpointKey 'Tier0Placement' -Result Manual
 
 #Cross-DC lastLogon avoids the lastLogonTimestamp replication lag (~14 days).
+    $script:LastLogonComplete=$false
     $MostRecentLogon = $null
     $LogonSource     = ''
 
@@ -371,24 +311,12 @@ foreach ($AccountName in $Accounts) {
         $LogonSource     = 'LastLogonDate (replicated, up to 14 days stale)'
     }
 
-    if (-not $MostRecentLogon) {
-        Add-AuditResult -Account $AccountName -CheckpointKey 'RecentTest' `
-            -Result Fail `
-            -Evidence "No logon timestamp on any DC. Account may never have been tested. Source: $LogonSource."
-    }
-    elseif ($MostRecentLogon -ge $TestThresholdDate) {
-        Add-AuditResult -Account $AccountName -CheckpointKey 'RecentTest' `
-            -Result Pass `
-            -Evidence "Most recent logon: $MostRecentLogon. Source: $LogonSource."
-    }
-    else {
-        $DaysSinceLogon = [int]((Get-Date) - $MostRecentLogon).TotalDays
-        Add-AuditResult -Account $AccountName -CheckpointKey 'RecentTest' `
-            -Result Fail `
-            -Evidence "Most recent logon: $MostRecentLogon ($DaysSinceLogon days ago). Schedule a DC console test. Source: $LogonSource."
-    }
+    Add-AuditResult -Account $AccountName -CheckpointKey RecentTest -Result Manual -Evidence "Last observed logon: $MostRecentLogon ($LogonSource). A logon timestamp does not prove a successful emergency recovery test; inspect the dated test record."
 #Check password is rotated and changed after last use/test run
-    if (-not $Account.PasswordLastSet) {
+    if (-not $script:LastLogonComplete) {
+        Add-AuditResult -Account $AccountName -CheckpointKey PasswordRotated -Result Error -Evidence 'Complete last-logon evidence unavailable; rotation after last use cannot be established.'
+    }
+    elseif (-not $Account.PasswordLastSet) {
         Add-AuditResult -Account $AccountName -CheckpointKey 'PasswordRotated' `
             -Result Fail `
             -Evidence "No PasswordLastSet value recorded."
@@ -461,7 +389,7 @@ foreach ($AccountName in $Accounts) {
             # DC enumeration failed and no -DomainControllers passed; the
             # account is restricted but we cannot validate to what.
             Add-AuditResult -Account $AccountName -CheckpointKey 'LogonWorkstationsRestricted' `
-                -Result Pass `
+                -Result Error `
                 -Evidence "Restricted to: $RestrictedWorkstations. (Could not validate against domain controllers - DC enumeration failed.)"
         }
     }
@@ -477,16 +405,17 @@ Write-Progress -Activity "Auditing accounts" -Completed
 $LoadedAccountCount = @($AccountData.Values | Where-Object { $_ }).Count
 
 if ($LoadedAccountCount -gt 0) {
-    Add-AuditResult -Account $GlobalAccountLabel -CheckpointKey 'DsrmDistinct' -Result Pass
+    Add-AuditResult -Account $GlobalAccountLabel -CheckpointKey 'DsrmDistinct' -Result Manual -Evidence 'AD cannot verify DSRM credential separation; review documented recovery procedures.'
 }
 else {
-    Add-AuditResult -Account $GlobalAccountLabel -CheckpointKey 'DsrmDistinct' -Result Manual
+    Add-AuditResult -Account $GlobalAccountLabel -CheckpointKey 'DsrmDistinct' -Result Manual -Evidence 'No resolved account; credential separation is unverified.'
 }
 #Check atleast 2 emergency account is configured
-if ($Accounts.Count -ge 2) {
+$EligibleIdentities=@($AccountData.Values | Where-Object {$_ -and $_.Enabled -and -not $_.LockedOut -and (-not $_.AccountExpirationDate -or $_.AccountExpirationDate -gt (Get-Date))} | Select-Object -ExpandProperty ObjectGUID -Unique)
+if ($EligibleIdentities.Count -ge 2) {
     Add-AuditResult -Account $GlobalAccountLabel -CheckpointKey 'TwoOrMoreAccounts' `
         -Result Pass `
-        -Evidence "$($Accounts.Count) accounts provided for audit."
+        -Evidence "$($EligibleIdentities.Count) distinct resolved accounts with eligible availability flags; access remains untested."
 }
 else {
     Add-AuditResult -Account $GlobalAccountLabel -CheckpointKey 'TwoOrMoreAccounts' -Result Fail
@@ -524,7 +453,7 @@ function Get-ScoreSummary {
     $Manual = @($Rows | Where-Object Result -eq 'Manual')
     $ErrorRows = @($Rows | Where-Object Result -eq 'Error')
 
-    $MaxAuto = ($Rows | Where-Object Result -in 'Pass', 'Fail' | Measure-Object Weight -Sum).Sum
+    $MaxAuto = ($Rows | Measure-Object Weight -Sum).Sum
     if ($null -eq $MaxAuto) { $MaxAuto = 0 }
 
     $Achieved = ($Pass | Measure-Object Weight -Sum).Sum
@@ -540,6 +469,8 @@ function Get-ScoreSummary {
         Achieved     = $Achieved
         MaxAutomated = $MaxAuto
         Percent      = $Percent
+        Readiness    = 'NotCertified'
+        Completeness = $(if($ErrorRows.Count -or $Manual.Count){'Incomplete'}else{'ObservedChecksOnly'})
     }
 }
 
@@ -547,10 +478,8 @@ Write-Host ""
 Write-Host "=== Per-Account Audit Score ==="
 
 # Read the CSV we streamed to and coerce Weight back to int (CSV round-trip stringifies it).
-$AuditResults = Import-Csv -Path $ReportPath | ForEach-Object {
-    $_.Weight = [int]$_.Weight
-    $_
-}
+$AuditResults=$AuditRows.ToArray()
+Export-NewReport $AuditResults $ReportPath
 
 foreach ($AccountName in $Accounts) {
     # Reset each iteration so a missing-account failure does not leak
@@ -595,7 +524,7 @@ Write-Host ("{0,-20} : Passed {1}, Failed {2}, Manual {3}, Errors {4}  |  Score 
     $GlobalSummary.Percent)
 
 Write-Host ""
-Write-Host "Manual items are not included in the automated score. Review each and verify manually."
+Write-Host "Manual and Error items remain in the score denominator. The score is an evidence indicator, never recovery-readiness certification."
 Write-Host ""
 
 # --- AdminDroid promo --------------------------------------------------------
@@ -607,4 +536,4 @@ Write-Host "admindroid.com" -NoNewline -ForegroundColor Yellow
 Write-Host " to get access to 450+ Active Directory reports and 60+ management actions. ~~" -ForegroundColor Green
 Write-Host ""
 
-Open-OutputFile
+if (@($AuditResults | Where-Object Result -eq Error).Count) {throw "Incomplete evidence in $ReportPath"}

@@ -111,7 +111,7 @@ try {
     $global:DistributionLists=@{'group@example.test'='group@example.test'}
     $global:InactiveDistributionLists=@{}
     GettingInactiveDistributionLists
-    Assert ($global:InactiveDistributionLists['group@example.test'][0] -eq [datetime]'2026-02-01T12:00:00Z') 'Latest trace must compare dates, not day-first strings.'
+    Assert ($global:InactiveDistributionLists['group@example.test'][0] -eq ([datetimeoffset]'2026-02-01T12:00:00Z').UtcDateTime) 'Latest trace must compare dates, not day-first strings.'
     Assert ((Get-FileHash -LiteralPath $HistoricalMessageTraceReportPath).Hash -eq $before) 'Trace evidence must not be rewritten.'
     Write-Output 'PASS: trace evidence preservation and cross-month date comparison.'
 
@@ -147,7 +147,7 @@ foreach ($path in 'ExchangeOnline/Audit PIM role.ps1','ExchangeOnline/Trace Emai
     $tokens=$null;$errors=$null
     $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $root $path),[ref]$tokens,[ref]$errors)
     $names=@($ast.ParamBlock.Parameters | ForEach-Object {$_.Name.VariablePath.UserPath})
-    Assert ($names -notcontains 'Password' -and $names -contains 'Credential') 'EXO entry points must not accept plaintext Password arguments.'
+    Assert ($names -notcontains 'Password' -and $names -contains 'TenantId') 'EXO entry points require explicit tenant and no plaintext password.'
 }
 Write-Output 'PASS: EXO plaintext credential parameter removal.'
 

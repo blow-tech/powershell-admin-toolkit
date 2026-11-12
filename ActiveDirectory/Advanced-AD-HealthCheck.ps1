@@ -1,4 +1,4 @@
-<# 
+﻿<#
 .SYNOPSIS
 Advanced Active Directory Health Check Script with HTML Report
 
@@ -15,7 +15,7 @@ Author:blow_tech
 
 [CmdletBinding()]
 param(
-    [string]$DomainName = "",
+    [Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9][A-Za-z0-9.-]+$')][string]$DomainName,
     [string]$ReportPath = ".\AD-Health-Report-$((Get-Date).ToString('yyyy-MM-dd_HH-mm-ss')).html",
     [switch]$OpenReport
 )
@@ -67,7 +67,7 @@ function New-ResultObject {
 function ConvertTo-HtmlTable {
     param(
         [Parameter(Mandatory)]
-        [array]$Data,
+        [AllowEmptyCollection()][AllowNull()][array]$Data,
         [Parameter(Mandatory)]
         [string]$Title
     )
@@ -94,7 +94,7 @@ function ConvertTo-HtmlTable {
                 $html += "<td><span class='badge $class'>$value</span></td>"
             }
             else {
-                $safe = [System.Web.HttpUtility]::HtmlEncode([string]$value)
+                $safe = [System.Net.WebUtility]::HtmlEncode([string]$value)
                 $html += "<td>$safe</td>"
             }
         }
@@ -181,8 +181,8 @@ $Now = Get-Date
 
 Write-Section "Collecting Forest and Domain Information"
 
-$Forest = Invoke-CommandSafe { Get-ADForest }
-$Domain = Invoke-CommandSafe { Get-ADDomain }
+$Forest = Invoke-CommandSafe { Get-ADForest -Server $DomainName }
+$Domain = Invoke-CommandSafe { Get-ADDomain -Server $DomainName }
 
 if ($Forest -and $Domain) {
     $DomainOverview += [PSCustomObject]@{
@@ -195,8 +195,8 @@ if ($Forest -and $Domain) {
         DomainsInForest         = ($Forest.Domains -join ", ")
         Sites                   = ($Forest.Sites -join ", ")
         GlobalCatalogs          = ($Forest.GlobalCatalogs -join ", ")
-        RecycleBinEnabled       = [bool]$Forest.RecycleBinEnabled
-        TombstoneLifetimeDays   = $Forest.TombStoneLifetime
+        RecycleBinEnabled       = 'NotAssessed'
+        TombstoneLifetimeDays   = 'NotAssessed'
     }
 
     $Results.Add((New-ResultObject -Category "Directory" -Check "Forest Discovery" -Target $Forest.Name -Status "PASS" -Details "Forest and domain information collected successfully." -Recommendation "No action required."))
@@ -270,32 +270,32 @@ Write-Section "Checking Critical Services"
 $CriticalServices = "NTDS","DNS","Netlogon","DFSR","W32Time","KDC","ADWS"
 foreach ($dc in $DomainControllers) {
     foreach ($svc in $CriticalServices) {
-        $service = Invoke-CommandSafe { Get-Service -ComputerName $dc.HostName -Name $svc }
+        $service = Invoke-CommandSafe { Get-CimInstance -ClassName Win32_Service -ComputerName $dc.HostName -Filter "Name='$svc'" -OperationTimeoutSec 30 -ErrorAction Stop }
         if ($service) {
-            $status = if ($service.Status -eq "Running") { "PASS" } else { "FAIL" }
+            $status = if ($service.State -eq "Running") { "PASS" } else { "FAIL" }
 
             $ServiceResults += [PSCustomObject]@{
                 DomainController = $dc.HostName
                 Service          = $service.Name
                 DisplayName      = $service.DisplayName
                 Status           = $status
-                CurrentState     = $service.Status
-                StartType        = (Invoke-CommandSafe { (Get-CimInstance Win32_Service -ComputerName $dc.HostName -Filter "Name='$svc'").StartMode })
+                CurrentState     = $service.State
+                StartType        = $service.StartMode
             }
 
-            $Results.Add((New-ResultObject -Category "Services" -Check $service.Name -Target $dc.HostName -Status $status -Details "Service state: $($service.Status)." -Recommendation "Ensure service is set correctly and investigate dependencies if not running."))
+            $Results.Add((New-ResultObject -Category "Services" -Check $service.Name -Target $dc.HostName -Status $status -Details "Service state: $($service.State)." -Recommendation "Ensure service is set correctly and investigate dependencies if not running."))
         }
         else {
             $ServiceResults += [PSCustomObject]@{
                 DomainController = $dc.HostName
                 Service          = $svc
                 DisplayName      = $svc
-                Status           = "WARN"
+                Status           = "UNKNOWN"
                 CurrentState     = "Unknown"
                 StartType        = "Unknown"
             }
 
-            $Results.Add((New-ResultObject -Category "Services" -Check $svc -Target $dc.HostName -Status "WARN" -Details "Unable to query service." -Recommendation "Verify RPC/WMI access and permissions."))
+            $Results.Add((New-ResultObject -Category "Services" -Check $svc -Target $dc.HostName -Status "UNKNOWN" -Details "Unable to query service." -Recommendation "Verify RPC/WMI access and permissions."))
         }
     }
 }
@@ -323,10 +323,10 @@ foreach ($dc in $DomainControllers) {
 
 Write-Section "Checking FSMO Role Holders"
 
-$fsmo = Invoke-CommandSafe { netdom query fsmo }
+$fsmo = @($Domain.PDCEmulator,$Domain.RIDMaster,$Domain.InfrastructureMaster,$Forest.SchemaMaster,$Forest.DomainNamingMaster) | Where-Object { $_ }
 if ($fsmo) {
     $FsmoResults += [PSCustomObject]@{
-        Command = "netdom query fsmo"
+        Command = "Scoped AD domain/forest role properties"
         Output  = ($fsmo | Out-String).Trim()
     }
     $Results.Add((New-ResultObject -Category "Operations" -Check "FSMO Role Query" -Target $DomainName -Status "PASS" -Details "FSMO role holders returned successfully." -Recommendation "Validate holders are online and backed up."))
@@ -337,24 +337,9 @@ else {
 
 Write-Section "Checking Replication Summary"
 
-$replSummary = Get-CommandTextOutput -Command "repadmin.exe" -Arguments "/replsummary"
-$showrepl    = Get-CommandTextOutput -Command "repadmin.exe" -Arguments "/showrepl * /csv"
-$dcdiagQ     = Get-CommandTextOutput -Command "dcdiag.exe" -Arguments "/q"
-$dcdiagE     = Get-CommandTextOutput -Command "dcdiag.exe" -Arguments "/e /test:Advertising /test:Services /test:Replications /test:SysVolCheck /test:NetLogons /test:DNS"
-
-$RawCommandSections += [PSCustomObject]@{ Title = "repadmin /replsummary"; Output = $replSummary.StdOut; ExitCode = $replSummary.ExitCode }
-$RawCommandSections += [PSCustomObject]@{ Title = "dcdiag /q"; Output = $dcdiagQ.StdOut; ExitCode = $dcdiagQ.ExitCode }
-$RawCommandSections += [PSCustomObject]@{ Title = "dcdiag /e /test:Advertising /test:Services /test:Replications /test:SysVolCheck /test:NetLogons /test:DNS"; Output = $dcdiagE.StdOut; ExitCode = $dcdiagE.ExitCode }
-
-if ($replSummary.ExitCode -eq 0 -or $replSummary.StdOut) {
-    $status = if ($replSummary.StdOut -match "fails|error" -or $replSummary.ExitCode -ne 0) { "WARN" } else { "PASS" }
-    $Results.Add((New-ResultObject -Category "Replication" -Check "repadmin /replsummary" -Target $DomainName -Status $status -Details "Replication summary executed." -Recommendation "Review largest delta, failed partners, and lingering replication issues."))
-}
-else {
-    $Results.Add((New-ResultObject -Category "Replication" -Check "repadmin /replsummary" -Target $DomainName -Status "FAIL" -Details $replSummary.StdErr -Recommendation "Ensure repadmin is installed and run with required permissions."))
-}
-
-$replCollection = Invoke-Collection { Get-ADReplicationFailure -Target * -Scope Forest -ErrorAction Stop }
+# Forest-wide native commands were removed: they exceeded the explicit domain scope.
+$Results.Add((New-ResultObject -Category 'Native diagnostics' -Check 'Extended dcdiag/repadmin' -Target $DomainName -Status 'UNKNOWN' -Details 'Not run. Schedule separately scoped lab-validated diagnostics; this report does not certify AD health.'))
+$replCollection = Invoke-Collection { Get-ADReplicationFailure -Target $DomainName -Scope Domain -ErrorAction Stop }
 $AdReplFailures = $replCollection.Data
 if (-not $replCollection.Succeeded) {
     $Results.Add((New-ResultObject -Category 'Replication' -Check 'AD Replication Failure' -Target $DomainName -Status 'UNKNOWN' -Details $replCollection.Error))
@@ -441,11 +426,11 @@ foreach ($dc in $DomainControllers) {
                 LogName   = $logName
                 Level     = 1,2,3
                 StartTime = (Get-Date).AddDays(-1)
-            } -ErrorAction Stop
+            } -MaxEvents 1000 -ErrorAction Stop
         }
 
         $count = if ($eventCollection.Succeeded) { @($eventCollection.Data).Count } else { $null }
-        $status = if (-not $eventCollection.Succeeded) { "UNKNOWN" } elseif ($count -eq 0) { "PASS" } elseif ($count -le 10) { "WARN" } else { "FAIL" }
+        $status = if (-not $eventCollection.Succeeded -or $count -ge 1000) { "UNKNOWN" } elseif ($count -eq 0) { "PASS" } elseif ($count -le 10) { "WARN" } else { "FAIL" }
 
         $EventSummary += [PSCustomObject]@{
             DomainController = $dc.HostName
@@ -454,7 +439,7 @@ foreach ($dc in $DomainControllers) {
             Status           = $status
         }
 
-        $detail = if ($eventCollection.Succeeded) { "$count warning/error/critical events in last 24 hours from log '$logName'." } else { $eventCollection.Error }
+        $detail = if ($eventCollection.Succeeded) { "Up to $count warning/error/critical events (1000-record cap) in last 24 hours from log '$logName'." } else { $eventCollection.Error }
         $recommendation = "Review recurring event IDs, correlate with replication, DNS, DFSR, and service failures."
 
         $Results.Add((New-ResultObject -Category "Events" -Check $logName -Target $dc.HostName -Status $status -Details $detail -Recommendation $recommendation))
@@ -474,7 +459,7 @@ foreach ($dc in $DomainControllers) {
         Details          = if ($nl.StdOut) { $nl.StdOut } else { $nl.StdErr }
     }
 
-    $Results.Add((New-ResultObject -Category "Connectivity" -Check "nltest /dsgetdc" -Target $dc.HostName -Status $status -Details (if ($nl.StdOut) { $nl.StdOut } else { $nl.StdErr }) -Recommendation "Validate SRV records, site/subnet mappings, and locator functionality."))
+    $Results.Add((New-ResultObject -Category "Connectivity" -Check "nltest /dsgetdc" -Target $dc.HostName -Status $status -Details $(if ($nl.StdOut) { $nl.StdOut } else { $nl.StdErr }) -Recommendation "Validate SRV records, site/subnet mappings, and locator functionality."))
 }
 
 Write-Section "Checking AD Database and SYSVOL Paths"
@@ -497,12 +482,12 @@ foreach ($dc in $DomainControllers) {
 
 Write-Section "Checking AD Optional Features, Trusts, and Privileged Groups"
 
-$optionalFeatures = Invoke-CommandSafe { Get-ADOptionalFeature -Filter * }
-$trusts           = Invoke-CommandSafe { Get-ADTrust -Filter * }
+$optionalFeatures = Invoke-CommandSafe { Get-ADOptionalFeature -Server $DomainName -Filter * }
+$trusts           = Invoke-CommandSafe { Get-ADTrust -Server $DomainName -Filter * }
 $privGroups       = @("Domain Admins","Enterprise Admins","Schema Admins","Administrators")
 
 foreach ($group in $privGroups) {
-    $members = Invoke-CommandSafe { Get-ADGroupMember -Identity $group -Recursive | Select-Object -ExpandProperty SamAccountName }
+    $members = Invoke-CommandSafe { Get-ADGroupMember -Server $DomainName -Identity $group -Recursive | Select-Object -ExpandProperty SamAccountName }
     if ($members) {
         $memberCount = @($members).Count
         $status = if ($memberCount -gt 15) { "WARN" } else { "PASS" }
@@ -747,8 +732,8 @@ $cardsHtml = @"
 
 $rawHtml = ""
 foreach ($section in $RawCommandSections) {
-    $safeTitle = [System.Web.HttpUtility]::HtmlEncode($section.Title)
-    $safeOut = [System.Web.HttpUtility]::HtmlEncode($section.Output)
+    $safeTitle = [System.Net.WebUtility]::HtmlEncode($section.Title)
+    $safeOut = [System.Net.WebUtility]::HtmlEncode($section.Output)
     $rawHtml += "<div class='section'><h2>Raw Command Output - $safeTitle</h2><div class='muted'>Exit Code: $($section.ExitCode)</div><pre>$safeOut</pre></div>"
 }
 
@@ -773,7 +758,11 @@ $htmlParts += "<div class='footer'>Generated by Advanced AD Health Check Script 
 $htmlParts += "</div></body></html>"
 
 $html = $htmlParts -join "`r`n"
-Set-Content -Path $ReportPath -Value $html -Encoding UTF8
+$full=[IO.Path]::GetFullPath($ReportPath)
+if([IO.File]::Exists($full) -or -not [IO.Directory]::Exists([IO.Path]::GetDirectoryName($full))){throw 'Use an existing protected output parent and new report filename.'}
+$temp=$full+'.'+[guid]::NewGuid().ToString('N')+'.partial'
+[IO.File]::WriteAllText($temp,$html,[Text.Encoding]::UTF8)
+[IO.File]::Move($temp,$full)
 
 Write-Host ""
 Write-Host "===============================" -ForegroundColor Green
@@ -784,3 +773,5 @@ Write-Host "Report saved to: $ReportPath" -ForegroundColor Cyan
 if ($OpenReport) {
     Start-Process $ReportPath
 }
+
+if (@($Results | Where-Object Status -in @('UNKNOWN','FAIL','ERROR')).Count) { throw "Report contains incomplete or failed checks: $ReportPath" }

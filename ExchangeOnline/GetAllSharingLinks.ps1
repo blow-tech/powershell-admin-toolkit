@@ -30,7 +30,6 @@ Function Get-SharedLinks
   $FileName=$Item.FieldValues.FileLeafRef
   $ObjectType=$Item.FileSystemObjectType
   Write-Progress -Activity ("Site Name: $Site") -Status ("Processing Item: "+ $FileName )
-  $HasUniquePermissions = Get-PnPProperty -ClientObject $Item -Property HasUniqueRoleAssignments -Connection $Connection -ErrorAction Stop
 
   If ($true)
   {
@@ -161,7 +160,7 @@ foreach ($url in $SiteUrl) {
   $Connection=Connect-PnPOnline -Url $url.AbsoluteUri -ClientId $ClientId.ToString() -Thumbprint $CertificateThumbprint -Tenant "$TenantName.onmicrosoft.com" -ReturnConnection -ErrorAction Stop
   $Site=$url.AbsoluteUri
   Get-SharedLinks
- } finally { if ($Connection) { Disconnect-PnPOnline -Connection $Connection -ErrorAction Stop } }
+ } finally { $Connection=$null } # Release returned connection without disconnecting caller session.
 }
 Export-NewReport @($ResultsBuffer.ToArray()) $OutputPath
 [pscustomobject]@{Status='Complete for selected sites/libraries';Count=$ResultsBuffer.Count;SnapshotUtc=$SnapshotUtc;OutputPath=$OutputPath}

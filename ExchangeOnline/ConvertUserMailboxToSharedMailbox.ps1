@@ -3,7 +3,8 @@
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact='High')]
 param(
     [Parameter(Mandatory)][string]$CSVPath,
-    [Parameter(Mandatory)][guid]$ExpectedTenantId
+    [Parameter(Mandatory)][guid]$ExpectedTenantId,
+    [switch]$Execute
 )
 $ErrorActionPreference='Stop'
 $organization = @(Get-OrganizationConfig -ErrorAction Stop)
@@ -21,6 +22,7 @@ $plan = foreach ($row in $rows) {
 }
 foreach ($mailbox in $plan) {
     if ($mailbox.RecipientTypeDetails -eq 'SharedMailbox') { continue }
+    if (-not $Execute) { [pscustomobject]@{Identity=$mailbox.ExchangeGuid;CurrentType=$mailbox.RecipientTypeDetails;ProposedType='SharedMailbox'}; continue }
     if ($PSCmdlet.ShouldProcess("$($mailbox.UserPrincipalName) [$($mailbox.ExchangeGuid)]", 'Convert user mailbox to shared')) {
         Set-Mailbox -Identity $mailbox.ExchangeGuid.ToString() -Type Shared -ErrorAction Stop
         if ((Get-Mailbox -Identity $mailbox.ExchangeGuid.ToString() -ErrorAction Stop).RecipientTypeDetails -ne 'SharedMailbox') { throw 'Mailbox conversion verification failed.' }

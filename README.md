@@ -1,3 +1,5 @@
+> **8 November remediation:** breaking parameter/schema changes and required lab gates are documented in [REMEDIATION-2026-11.md](REMEDIATION-2026-11.md). This branch is reviewable work, not production certification.
+
 # Remediation status
 
 Safety changes are proposed in an unmerged PR. Read [REMEDIATION-2026-09.md](REMEDIATION-2026-09.md) and [REMEDIATION-2026-11.md](REMEDIATION-2026-11.md) before using scripts; older examples below may have changed parameters. No universal safety or compliance certification is implied.

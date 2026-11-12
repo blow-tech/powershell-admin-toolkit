@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 Compatibility entry point for the maintained AD health collector.
 The former inline checks could report success after collection failure and sent
@@ -8,7 +8,7 @@ in a separately configured/approved notification job.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$ReportPath,
-    [string]$DomainName='',
+    [Parameter(Mandatory)][string]$DomainName,
     [switch]$OpenReport
 )
 $ErrorActionPreference='Stop'

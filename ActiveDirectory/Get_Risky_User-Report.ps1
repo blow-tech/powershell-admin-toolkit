@@ -1,10 +1,10 @@
-<#
+﻿<#
 =============================================================================================
 Name:           Risky Users Report in Microsoft Entra
 Version:        1.0
 Website:        o365reports.com
 
-Script Highlights:  
+Script Highlights:
 ~~~~~~~~~~~~~~~~~
 1. Exports all risky users in your organization to a CSV file.
 2. Lists all users who have a history of risky activity.
@@ -22,7 +22,7 @@ For detailed Script execution: https://o365reports.com/2025/05/20/how-to-get-all
 
 Param
 (
-    [nullable[int]]$ShowRiskyUsersFromLastNDays,
+    [ValidateRange(1,3650)][nullable[int]]$ShowRiskyUsersFromLastNDays,
     [ValidateSet("Low", "Medium", "High", "None")]
     [string[]]$RiskLevel,
     [ValidateSet("ConfirmedSafe", "Remediated", "Dismissed", "AtRisk", "ConfirmedCompromised", "None")]
@@ -39,16 +39,16 @@ $context=Get-MgContext
 if ($null -eq $context -or $context.TenantId -ne $TenantId) { throw 'Connect Graph to the expected TenantId first.' }
 $OutputRecords=New-Object 'System.Collections.Generic.List[object]'
 $Location = Get-Location
-$CurrentDate = Get-Date
-$ExportCSV = "$Location\M365_Risky_Users_Report$($CurrentDate.ToString('yyyyMMddTHHmmss'))_$([guid]::NewGuid().ToString('N')).csv"
+$CurrentDate = [datetime]::UtcNow
+$ExportCSV = Join-Path $Location "M365_Risky_Users_Report$($CurrentDate.ToString('yyyyMMddTHHmmss'))_$([guid]::NewGuid().ToString('N')).csv"
 $Filter = @()
-$ExportResult =""   
-$ExportResults = @() 
+$ExportResult =""
+$ExportResults = @()
 
 if ($ShowRiskyUsersFromLastNDays -ne $null) {
-    $Filter += "(RiskLastUpdatedDateTime ge $($CurrentDate.AddDays(-$ShowRiskyUsersFromLastNDays).ToString('yyyy-MM-dd')))"
+    $Filter += "(RiskLastUpdatedDateTime ge $($CurrentDate.AddDays(-$ShowRiskyUsersFromLastNDays).ToString('yyyy-MM-ddTHH:mm:ssZ')))"
 } else {
-    $Filter += "(RiskLastUpdatedDateTime ge $($CurrentDate.AddDays(-90).ToString('yyyy-MM-dd')))"
+    $Filter += "(RiskLastUpdatedDateTime ge $($CurrentDate.AddDays(-90).ToString('yyyy-MM-ddTHH:mm:ssZ')))"
 }
 
 $Count=0

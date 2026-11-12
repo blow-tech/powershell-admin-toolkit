@@ -35,8 +35,8 @@ For detailed script execution: https://o365reports.com/2023/04/18/get-azure-ad-d
 ~~~~~~~~~~~
 Change Log:
 ~~~~~~~~~~~
-V1.0 (Apr 25, 2023) – File created.  
-V2.0 (Jul 17, 2024) – Updated to use MS Graph beta PowerShell module instead of 'Select-MgProfile beta' to load beta commands.  
+V1.0 (Apr 25, 2023) – File created.
+V2.0 (Jul 17, 2024) – Updated to use MS Graph beta PowerShell module instead of 'Select-MgProfile beta' to load beta commands.
 V3.0 (Jul 03, 2025) – Upgraded from the 'MS Graph beta module' to Microsoft Graph module and added additional filters such as device join type, profile type, compliance status, and more.
 
 ============================================================================================
@@ -88,7 +88,7 @@ $OutputRecords=New-Object 'System.Collections.Generic.List[object]'
 $Location = Get-Location
 $CurrentDate = Get-Date
 $TimeZone = (Get-TimeZone).Id
-$OutputCsv = "$Location\EntraDevicesReport_$($CurrentDate.ToString('yyyyMMddTHHmmss'))_$([guid]::NewGuid().ToString('N')).csv"
+$OutputCsv = Join-Path $Location "EntraDevicesReport_$($CurrentDate.ToString('yyyyMMddTHHmmss'))_$([guid]::NewGuid().ToString('N')).csv"
 $Report=""
 $PrintedLogs=0
 
@@ -103,7 +103,7 @@ Get-MgDeviceManagementManagedDevice -All -Property AzureAdDeviceId,SerialNumber 
 Get-MgDevice -All | ForEach-Object {
     Write-Progress -Activity "Fetching devices: $($_.DisplayName)"
     $LastSigninActivity = "-"
-    $TrustType = "" 
+    $TrustType = ""
 
     if(($_.ApproximateLastSignInDateTime -ne $null)) {
         $LastSigninActivity = (New-TimeSpan -Start $_.ApproximateLastSignInDateTime).Days
@@ -158,11 +158,11 @@ Get-MgDevice -All | ForEach-Object {
     if ($_.TrustType -eq "Workplace") { $TrustType = "Entra registered" }
     elseif ($_.TrustType -eq "AzureAd") { $TrustType = "Entra joined" }
     elseif ($_.TrustType -eq "ServerAd") { $TrustType = "Entra hybrid joined" }
-    
+
     if ($_.ApproximateLastSignInDateTime -ne $null) {
-        $LastSigninDateTime = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId($_.ApproximateLastSignInDateTime,$TimeZone) 
+        $LastSigninDateTime = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId($_.ApproximateLastSignInDateTime,$TimeZone)
         $RegistrationDateTime = if ($_.RegistrationDateTime) { [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId($_.RegistrationDateTime,$TimeZone) } else { '-' }
-    } 
+    }
     else {
         $LastSigninDateTime = "-"
         $RegistrationDateTime = "-"
@@ -170,8 +170,8 @@ Get-MgDevice -All | ForEach-Object {
 
     if ($_.ComplianceExpirationDateTime -ne $null) {
         $ComplianceExpirationDateTime = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId($_.ComplianceExpirationDateTime,$TimeZone)
-    } else { 
-        $ComplianceExpirationDateTime = "-" 
+    } else {
+        $ComplianceExpirationDateTime = "-"
     }
 
     $ExtensionAttributes = $_.ExtensionAttributes
@@ -183,16 +183,16 @@ Get-MgDevice -All | ForEach-Object {
     # Apply filters based on the param values...
     if ($DeviceStatus -eq "Enabled" -and $_.AccountEnabled -ne $true) { $Print = 0 }
     elseif ($DeviceStatus -eq "Disabled" -and $_.AccountEnabled -ne $false) { $Print = 0 }
-    
+
     if ($ManagementStatus -eq "Managed" -and $_.IsManaged -ne $true) { $Print = 0 }
     elseif ($ManagementStatus -eq "Unmanaged" -and $_.IsManaged -ne $false) { $Print = 0 }
-    
+
     if ($ComplianceStatus -eq "Compliant" -and $_.IsCompliant -ne $true) { $Print = 0 }
     elseif ($ComplianceStatus -eq "NonCompliant" -and $_.IsCompliant -ne $false) { $Print = 0 }
-    
+
     if ($RootedStatus -eq "Rooted" -and $_.IsRooted -ne $true) { $Print = 0 }
     elseif ($RootedStatus -eq "NonRooted" -and $_.IsRooted -ne $false) { $Print = 0 }
-    
+
     if (!([string]::IsNullOrEmpty($ProfileType)) -and ($_.ProfileType -notin $ProfileType)) { $Print = 0 }
     if (!([string]::IsNullOrEmpty($JoinType)) -and ($TrustType -notin $JoinType)) { $Print = 0 }
     if (!([string]::IsNullOrEmpty($DeviceOwnership)) -and ($_.DeviceOwnership -notin $DeviceOwnership)) { $Print = 0 }
@@ -231,7 +231,7 @@ Get-MgDevice -All | ForEach-Object {
                     'Extension Attributes'   = (@($AttributeArray) | Out-String).Trim()
                     }
 
-    $Results = $ExportResult.GetEnumerator() | Where-Object {$_.Value -eq $null -or $_.Value -eq ""} 
+    $Results = $ExportResult.GetEnumerator() | Where-Object {$_.Value -eq $null -or $_.Value -eq ""}
     Foreach($Result in $Results) {
         $ExportResult[$Result.Name] = "-"
     }
