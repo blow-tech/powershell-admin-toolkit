@@ -1,17 +1,10 @@
-function collectADSitesServices{
-    $splat_params = @{'filter' = '*';
-                    'properties' = '*'}
-    $splat_select_params = @{'property' = 'name','Description','AutomaticInterSiteTopologyGenerationEnabled','AutomaticTopologyGenerationEnabled',`
-                    'RedundantServerTopologyEnabled','ScheduleHashingEnabled','TopologyCleanupEnabled','TopologyDetectStaleEnabled','TopologyMinimumHopsEnabled',`
-                    'UniversalGroupCachingEnabled','UniversalGroupCachingRefreshSite','WindowsServer2000BridgeheadSelectionMethodEnabled',`
-                    'WindowsServer2000KCCISTGSelectionBehaviorEnabled','WindowsServer2003KCCBehaviorEnabled',`
-                    'WindowsServer2003KCCIgnoreScheduleEnabled','WindowsServer2003KCCSiteLinkBridgingEnabled',`
-                    $(@{name='gpLink';expression={if($_.gplink){$true}else{$false}}}),`
-                    $(@{name='istgOrphaned';expression={if($_.interSiteTopologyGenerator -like "*0ADEL*"){$true}else{$false}}}),`
-                    'whencreated','whenchanged','DistinguishedName'}
-
-    get-adreplicationsite @splat_params | select-object @splat_select_params
-
-}
-
-collectADSitesServices  | export-csv ".\$((get-adforest).name)_adsites.csv" -NoTypeInformation
+﻿<# Read-only forest configuration evidence queried via explicit Server. Requires AD read permissions.
+A successful empty query is distinct from a denied query; no report is published after failure. #>
+[CmdletBinding()]
+param([Parameter(Mandatory)][string]$Server,[Parameter(Mandatory)][string]$OutputPath)
+$ErrorActionPreference='Stop'
+Import-Module ActiveDirectory -ErrorAction Stop
+. (Join-Path $PSScriptRoot 'common/ReportSafety.ps1')
+$rows=@(Get-ADReplicationSite -Server $Server -Filter * -Properties Description,AutomaticInterSiteTopologyGenerationEnabled,AutomaticTopologyGenerationEnabled,gpLink,interSiteTopologyGenerator,whenCreated,whenChanged -ErrorAction Stop |
+ Select-Object ObjectGUID,Name,Description,AutomaticInterSiteTopologyGenerationEnabled,AutomaticTopologyGenerationEnabled,gpLink,interSiteTopologyGenerator,whenCreated,whenChanged,DistinguishedName)
+Export-NewReport -Rows $rows -Path $OutputPath

@@ -1,8 +1,4 @@
-#Requires -Module ActiveDirectory
-#Requires -version 3.0
-#Requires -RunAsAdministrator
-
-<#PSScriptInfo
+﻿<#PSScriptInfo
 
 .VERSION 0.1
 
@@ -34,89 +30,19 @@ from the use or distribution of the Sample Code..
  this is to help descover Objects with this exploit
  https://support.microsoft.com/en-us/help/4490425/updates-to-tgt-delegation-across-incoming-trusts-in-windows-server
 
-#> 
-Param($reportpath = "$env:userprofile\Documents")
-$trust = @()
-$objects = @()
-
-$SERVER_TRUST_ACCOUNT = 0x2000  
-$TRUSTED_FOR_DELEGATION = 0x80000  
-$TRUSTED_TO_AUTH_FOR_DELEGATION= 0x1000000  
-$PARTIAL_SECRETS_ACCOUNT = 0x4000000
-$bitmask = $TRUSTED_FOR_DELEGATION -bor $TRUSTED_TO_AUTH_FOR_DELEGATION -bor $PARTIAL_SECRETS_ACCOUNT 
-
-$filter = @"  
-(& 
-  (servicePrincipalname=*) 
-  (| 
-    (msDS-AllowedToActOnBehalfOfOtherIdentity=*) 
-    (msDS-AllowedToDelegateTo=*) 
-    (UserAccountControl:1.2.840.113556.1.4.804:=$bitmask) 
-  ) 
-  (| 
-    (objectcategory=computer) 
-    (objectcategory=person) 
-    (objectcategory=msDS-GroupManagedServiceAccount) 
-    (objectcategory=msDS-ManagedServiceAccount) 
-  ) 
-) 
-"@ -replace "[\s\n]", ''  
-
-$propertylist = @(  
-        "servicePrincipalname",   
-        "useraccountcontrol",   
-        "samaccountname",   
-        "msDS-AllowedToDelegateTo",   
-        "msDS-AllowedToActOnBehalfOfOtherIdentity"  
-    ) 
-
-$hash_isDC = @{name='isDC';expression={($account.useraccountcontrol -band $SERVER_TRUST_ACCOUNT) -ne 0}} 
-$hash_fullDelegation = @{name='fullDelegation';expression={($account.useraccountcontrol -band $TRUSTED_FOR_DELEGATION) -ne 0}} 
-$hash_constrainedDelegation = @{name='constrainedDelegation';expression={($account.'msDS-AllowedToDelegateTo').count -gt 0}}  
-$hash_isRODC = @{name='isRODC';expression={($account.useraccountcontrol -band $PARTIAL_SECRETS_ACCOUNT) -ne 0}}
-$hash_resourceDelegation = @{name='resourceDelegation';expression={$account.'msDS-AllowedToActOnBehalfOfOtherIdentity' -ne $null}}
-$hash_domain = @{name='Domain';expression={$domain}}
-
-function returnallADTrust{
-    foreach($domain in (get-adforest).domains){
-    write-host "Scanning $domain"
-    get-adtrust -filter {TGTDelegation -eq $false} `
-        -server $domain 
-
-    }
-}
-Function returnallobjectspn{
-    foreach($domain in (get-adforest).domains){
-    write-host "Scanning $domain"
-    
-
-    Get-ADObject -LDAPFilter $filter -SearchScope Subtree `
-        -Properties $propertylist -Server $domain -PipelineVariable account | select `
-        $hash_domain, samaccountname, objectclass, $hash_isDC,$hash_isRODC, $hash_fullDelegation, `
-        $hash_constrainedDelegation,$hash_resourceDelegation 
-}
-}
-
-foreach($domain in (get-adforest).domains){
-    write-host "Scanning $domain"
-    $trust += get-adtrust -filter {TGTDelegation -eq $false} `
-        -server $domain | select 
-
-    $objects += Get-ADObject -LDAPFilter $filter -SearchScope Subtree `
-        -Properties $propertylist -Server $domain -PipelineVariable account | select `
-        $hash_domain, samaccountname, objectclass, $hash_isDC,$hash_isRODC, $hash_fullDelegation, `
-        $hash_constrainedDelegation,$hash_resourceDelegation 
-}
-$trust = returnallADTrust
-$objects = returnallobjectspn
-
-$trust_count = ($trust | Measure-Object).count
-$obj_count = ($objects | where {($_.isDC -eq $false) -and ($_.isRODC -eq $false) -and ($_.fullDelegation -eq $true)} | measure-object).count
-
-Write-host "Trust Found: $trust_count" -ForegroundColor Yellow
-Write-host "Objects with Full Delegation Found: $obj_count" -ForegroundColor Yellow
-
-Write-host "Files can be found here $reportpath  * _at_risk.csv"
-
-$trust | export-csv "$reportpath\trust_at_risk.csv" -NoTypeInformation
-$objects | export-csv "$reportpath\objects_at_risk.csv" -NoTypeInformation
+#>
+# Read-only, scoped configuration evidence. Does not certify exploitability/effective access.
+[CmdletBinding()]
+param([Parameter(Mandatory)][string]$Server,[Parameter(Mandatory)][string]$SearchBase,[Parameter(Mandatory)][string]$OutputPath)
+$ErrorActionPreference='Stop'
+Import-Module ActiveDirectory -ErrorAction Stop
+. (Join-Path $PSScriptRoot 'common/ReportSafety.ps1')
+$filter='(&(servicePrincipalName=*)(|(msDS-AllowedToActOnBehalfOfOtherIdentity=*)(msDS-AllowedToDelegateTo=*)(userAccountControl:1.2.840.113556.1.4.804:=17301504)))'
+$rows=@(Get-ADObject -Server $Server -SearchBase $SearchBase -LDAPFilter $filter -Properties userAccountControl,sAMAccountName,msDS-AllowedToDelegateTo,msDS-AllowedToActOnBehalfOfOtherIdentity -ErrorAction Stop | ForEach-Object {
+ [pscustomobject]@{ObjectGUID=$_.ObjectGUID;DistinguishedName=$_.DistinguishedName;SamAccountName=$_.sAMAccountName;IsDC=(($_.userAccountControl -band 8192) -ne 0);Unconstrained=(($_.userAccountControl -band 524288) -ne 0);ProtocolTransition=(($_.userAccountControl -band 16777216) -ne 0);AllowedToDelegateTo=($_.'msDS-AllowedToDelegateTo' -join ';');ResourceDelegationConfigured=($null -ne $_.'msDS-AllowedToActOnBehalfOfOtherIdentity')}
+})
+# Trust objects are a separate domain-wide configuration scope; explicitly identified rows, not a risk verdict.
+$rows+=@(Get-ADTrust -Server $Server -Filter * -ErrorAction Stop | Select-Object @{n='RecordType';e={'TrustConfiguration'}},Name,Direction,TGTDelegation)
+# Normalize mixed record schemas so trust fields cannot be dropped by Export-Csv's first-row schema.
+$rows=@($rows | Select-Object RecordType,ObjectGUID,DistinguishedName,SamAccountName,IsDC,Unconstrained,ProtocolTransition,AllowedToDelegateTo,ResourceDelegationConfigured,Name,Direction,TGTDelegation)
+Export-NewReport -Rows $rows -Path $OutputPath

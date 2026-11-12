@@ -1,25 +1,12 @@
-# Name the server where this needs to be run
-$ServerName = 'localhost'
-
-# Get all volumes on the server
-$Volumes = Get-WmiObject -Namespace "root/cimv2" -ComputerName $ServerName -Class Win32_Volume |
-Where-Object { $_.Capacity -gt 0 -and ($_.DriveType -eq 2 -or $_.DriveType -eq 3) }
-
-# Create custom properties
-$TCapacity = @{
-    Expression = { "{0,19:n2}" -f ($_.Capacity / 1GB) }
-    Name       = 'Total Capacity (GB)'
-}
-
-$Freespace = @{
-    Expression = { "{0,15:n2}" -f ($_.FreeSpace / 1GB) }
-    Name       = 'Free Space (GB)'
-}
-
-$PercentFree = @{
-    Expression = { [int]($_.Freespace * 100 / $_.Capacity) }
-    Name       = 'Free (%)'
-}
-
-# Display the formatted data
-$Volumes | Select-Object -Property Name, $TCapacity, $Freespace, $PercentFree | Sort-Object -Property 'Free (%)' -Descending
+﻿<# Read-only CIM volume evidence. Requires CIM read permissions on explicit target.
+Capacity values are numeric bytes; unavailable/invalid data stops collection. No WMI v1 or formatting strings. #>
+[CmdletBinding()]
+param([Parameter(Mandatory)][string]$ComputerName)
+$ErrorActionPreference='Stop'
+$volumes=@(Get-CimInstance -ClassName Win32_Volume -ComputerName $ComputerName -OperationTimeoutSec 30 -ErrorAction Stop | Where-Object {$_.DriveType -in 2,3})
+if(-not $volumes.Count){throw 'UNKNOWN: no volume observations returned.'}
+$rows=@(foreach($v in $volumes){
+ if($null -eq $v.Capacity -or $v.Capacity -le 0 -or $null -eq $v.FreeSpace -or $v.FreeSpace -lt 0 -or $v.FreeSpace -gt $v.Capacity){throw 'UNKNOWN: invalid volume capacity/free-space data.'}
+ [pscustomobject]@{ComputerName=$ComputerName;Name=$v.Name;CapacityBytes=$v.Capacity;FreeBytes=$v.FreeSpace;FreePercent=[math]::Round(100*$v.FreeSpace/$v.Capacity,2)}
+})
+$rows | Sort-Object FreePercent

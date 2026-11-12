@@ -1,26 +1,28 @@
-cls
-cd "$env:userprofile\Documents"
-
-#find group or user, make sure to use the samaccount name.  you can also use an array of principals
-#just remove the comment.
-
-$PrincipalNames = @()
-$PrincipalNames = "grp-contoso-general-132"
-#$PrincipalNames = "Goup1","group2","user1"
-$Pattern = "S-\d-(?:\d+-){1,14}\d+"
-
-get-adforest | select -ExpandProperty domains -pv domain | foreach{
-    Write-host "GPO Search: $domain"
-    Get-GPO -all -domain $domain -pv gpo | select -ExpandProperty DisplayName | foreach{
-        Get-GPPermissions -Name $_ -All -DomainName $domain | where {$_.Trustee.name -in $PrincipalNames -or $_.trustee.sidtype -eq "Unknown"} | select `
-            @{n='Domain';e={$gpo.DomainName}},@{n='GPO';e={$gpo.DisplayName}},@{n='Trustee';e={$_.Trustee.name}},Permission,Inherited
-    }
-} | export-csv .\found_group_policies.csv -NoTypeInformation
-Write-host "Finished GPO Report found_group_policies.csv"
-
-get-adforest | select -ExpandProperty domains -pv domain | foreach{Write-host "Container Search: $domain"
-    Get-ADObject -ldapFilter "(|(objectclass=organizationalunit)(objectclass=domainDNS)(objectclass=builtinDomain)(objectclass=Container))" -Properties nTSecurityDescriptor -server $domain -pv container | `
-        select -ExpandProperty nTSecurityDescriptor | select -ExpandProperty Access | `           
-            select @{n='Domain';e={$domain}},@{n='Location';e={$container.distinguishedname}},@{n='IdentityReference';e={[string]$_.IdentityReference}},IsInherited,@{n='ActiveDirectoryRights';e={[string]$_.ActiveDirectoryRights}},AccessControlType} | `
-                where {($_.IdentityReference -split "\\")[1] -in $PrincipalNames -or $_.IdentityReference -match $Pattern} | export-csv .\found_containers.csv -NoTypeInformation
-Write-host "Finished Container Report found_containers.csv"
+﻿<# Read-only direct GPO/container ACL evidence for reviewed SIDs. Requires AD/GroupPolicy modules,
+explicit domain/DC/search base and read access. Does not evaluate effective rights, nested groups or inheritance reach.
+Unresolvable ACE identities are UNKNOWN rows; incomplete evidence causes failure after marked output. #>
+[CmdletBinding()]
+param([Parameter(Mandatory)][string]$DomainName,[Parameter(Mandatory)][string]$Server,[Parameter(Mandatory)][string]$SearchBase,[Parameter(Mandatory)][ValidatePattern('^S-1-[0-9]+(-[0-9]+)+$')][string[]]$PrincipalSid,[Parameter(Mandatory)][string]$OutputPath)
+$ErrorActionPreference='Stop'
+Import-Module ActiveDirectory -ErrorAction Stop
+Import-Module GroupPolicy -ErrorAction Stop
+. (Join-Path $PSScriptRoot 'common/ReportSafety.ps1')
+if((Get-ADDomain -Server $Server -ErrorAction Stop).DNSRoot -ne $DomainName){throw 'Server/domain mismatch.'}
+$rows=New-Object 'System.Collections.Generic.List[object]';$unknown=$false
+foreach($gpo in @(Get-GPO -All -Domain $DomainName -Server $Server -ErrorAction Stop)){
+ foreach($ace in @(Get-GPPermission -Guid $gpo.Id -All -DomainName $DomainName -Server $Server -ErrorAction Stop)){
+  $sid=[string]$ace.Trustee.Sid;$state='Collected'
+  if(-not $sid){$state='UNKNOWN';$unknown=$true}
+  if(-not $sid -or $sid -in $PrincipalSid){$rows.Add([pscustomobject]@{Kind='GPO';ObjectId=$gpo.Id;Name=$gpo.DisplayName;PrincipalSid=$sid;Rights=[string]$ace.Permission;AccessType='GPO permission';Inherited=$ace.Inherited;CollectionState=$state})}
+ }
+}
+foreach($container in @(Get-ADObject -Server $Server -SearchBase $SearchBase -LDAPFilter '(|(objectClass=organizationalUnit)(objectClass=domainDNS)(objectClass=builtinDomain)(objectClass=container))' -Properties nTSecurityDescriptor -ErrorAction Stop)){
+ if($null -eq $container.nTSecurityDescriptor){throw "UNKNOWN: no security descriptor for $($container.DistinguishedName)"}
+ foreach($ace in $container.nTSecurityDescriptor.Access){
+  $sid='';$state='Collected'
+  try{$sid=$ace.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value}catch{$state='UNKNOWN';$unknown=$true}
+  if(-not $sid -or $sid -in $PrincipalSid){$rows.Add([pscustomobject]@{Kind='Container';ObjectId=$container.ObjectGUID;Name=$container.DistinguishedName;PrincipalSid=$sid;Rights=[string]$ace.ActiveDirectoryRights;AccessType=[string]$ace.AccessControlType;Inherited=$ace.IsInherited;CollectionState=$state})}
+ }
+}
+Export-NewReport -Rows $rows.ToArray() -Path $OutputPath
+if($unknown){throw 'Report contains unresolved ACL identities; effective access is not certified.'}

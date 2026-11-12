@@ -155,3 +155,65 @@ $failed=$false
 try { & (Join-Path $root 'ActiveDirectory/Manage Active Directory Groups.ps1') -DomainName example.test -MultiExecutionMode -InputCsvFilePath nonexistent.csv } catch {$failed=$true}
 Assert $failed 'Multi-action bulk mode must fail before reading or using a stale CSV.'
 Write-Output 'PASS group manager stale-grant refusal, delegation error/disposal, declined removal and bulk-menu refusal.'
+$stagedGroup=Join-Path $root ('ExchangeOnline/.fixture-'+[guid]::NewGuid().ToString('N')+'.ps1')
+Copy-Item -LiteralPath (Join-Path $root 'ExchangeOnline/Get-DistributionGroupMember') -Destination $stagedGroup
+$temp=Join-Path ([IO.Path]::GetTempPath()) ('remaining-report-fixture-'+[guid]::NewGuid().ToString('N'))
+$null=New-Item -ItemType Directory -Path $temp
+try {
+ function Get-ADUser {
+  [pscustomobject]@{Name='recent';PasswordLastSet=[datetime]::UtcNow.AddDays(-1);whenCreated=[datetime]::UtcNow.AddYears(-5)}
+  [pscustomobject]@{Name='old';PasswordLastSet=[datetime]::UtcNow.AddYears(-1);whenCreated=[datetime]::UtcNow}
+ }
+ $r=@(& (Join-Path $root 'ActiveDirectory/GetADuserpasswd.ps1') -Server fixture -SearchBase fixture)
+ Assert ($r.Count -eq 1 -and $r[0].Name -eq 'recent') 'Password report must filter PasswordLastSet, not account creation.'
+ function Get-DistributionGroup {[pscustomobject]@{Guid=[guid]'22222222-2222-2222-2222-222222222222';PrimarySmtpAddress='group@example.test'}}
+ function Get-DistributionGroupMember {throw 'Denied group fixture'}
+ $path=Join-Path $temp 'members.csv';$failed=$false
+ try{& $stagedGroup -TenantId '33333333-3333-3333-3333-333333333333' -OutputPath $path}catch{$failed=$true}
+ Assert ($failed -and -not (Test-Path $path)) 'Denied group membership cannot publish a complete report.'
+ function Get-DistributionGroupMember {return}
+ & $stagedGroup -TenantId '33333333-3333-3333-3333-333333333333' -OutputPath $path | Out-Null
+ $r=@(Import-Csv $path);Assert ($r.Count -eq 1 -and $r[0].CollectionState -eq 'Empty') 'Successfully empty group must remain visible.'
+ function Get-CimInstance {[pscustomobject]@{DeviceID='C:';Size=0;FreeSpace=0}}
+ $path=Join-Path $temp 'disk.csv';$failed=$false
+ try{& (Join-Path $root 'scripts/cleanup/disk_space_report.ps1') -ComputerName fixture -OutputPath $path}catch{$failed=$true}
+ Assert ($failed -and -not (Test-Path $path)) 'Zero disk capacity must fail without publication.'
+ function Get-CimInstance {[pscustomobject]@{DeviceID='C:';Size=1000;FreeSpace=250}}
+ & (Join-Path $root 'scripts/cleanup/disk_space_report.ps1') -ComputerName fixture -OutputPath $path
+ Assert ((Import-Csv $path).FreePercent -eq '25') 'Disk report must retain numeric capacity ratio.'
+ function Get-MgContext {[pscustomobject]@{TenantId='33333333-3333-3333-3333-333333333333'}}
+ function Get-MgBetaAuditLogSignIn {
+  param($Filter,[switch]$All,$PageSize)
+  Assert ($Filter -match 'createdDateTime ge 2026-01-01T00:00:00Z' -and $Filter -match 'createdDateTime lt 2026-01-02T00:00:00Z' -and $Filter -match 'signInEventTypes/any' -and $All -and $PageSize -eq 100) 'Sign-in query must retain UTC bounds/type and paging.'
+  [pscustomobject]@{Id='event-1';Status=@{ErrorCode=50001};RiskState='hidden'}
+  [pscustomobject]@{Id='event-2';Status=@{ErrorCode=50001};RiskState='atRisk'}
+ }
+ $signins=Join-Path $root 'M365 Sign-in Failure Report .ps1';$path=Join-Path $temp 'signin.csv'
+ & $signins -UseBeta -TenantId '33333333-3333-3333-3333-333333333333' -StartUtc '2026-01-01T00:00:00Z' -EndUtc '2026-01-02T00:00:00Z' -OutputPath $path | Out-Null
+ Assert (@(Import-Csv $path).Count -eq 2) 'Raw sign-in report must retain hidden risk evidence.'
+ foreach($scenario in @('cap','hidden')){
+  $path=Join-Path $temp ($scenario+'.csv');$failed=$false
+  $extra=if($scenario -eq 'cap'){@{MaxRecords=1}}else{@{RiskySignInsOnly=$true}}
+  try{& $signins -UseBeta -TenantId '33333333-3333-3333-3333-333333333333' -StartUtc '2026-01-01T00:00:00Z' -EndUtc '2026-01-02T00:00:00Z' -OutputPath $path @extra}catch{$failed=$true}
+  Assert ($failed -and -not (Test-Path $path)) 'Capped/hidden filtered sign-in evidence must not publish a completed report.'
+ }
+ function Get-MgAuditLogSignIn {
+  param($Filter)
+  Assert ($Filter -notmatch 'signInEventTypes') 'Default must use the stable interactive-user contract.'
+  [pscustomobject]@{Id='stable-event';Status=@{ErrorCode=50001};RiskState='none'}
+ }
+ $path=Join-Path $temp 'stable.csv'
+ & $signins -TenantId '33333333-3333-3333-3333-333333333333' -StartUtc '2026-01-01T00:00:00Z' -EndUtc '2026-01-02T00:00:00Z' -OutputPath $path | Out-Null
+ Assert ((Import-Csv $path).Id -eq 'stable-event') 'Stable default sign-in query must publish its evidence.'
+ function Get-GPO {[pscustomobject]@{Id=[guid]'22222222-2222-2222-2222-222222222222';DisplayName='Duplicate-friendly-name'}}
+ function Get-GPPermission {
+  param($Guid,$DomainName,$Server)
+  Assert ($Guid -eq [guid]'22222222-2222-2222-2222-222222222222' -and $Server -eq 'fixture' -and $DomainName -eq 'example.test') 'GPO permission query must use GUID and explicit scope.'
+  [pscustomobject]@{Trustee=@{Sid='S-1-5-21-1-2-3-1001'};Permission='GpoRead';Inherited=$false}
+ }
+ function Get-ADObject {return}
+ $path=Join-Path $temp 'acl.csv'
+ & (Join-Path $root 'scripts/Find-Principal_PermAD.ps1') -DomainName example.test -Server fixture -SearchBase fixture -PrincipalSid 'S-1-5-21-1-2-3-1001' -OutputPath $path
+ Assert (@(Import-Csv $path).Count -eq 1) 'Exact SID GPO evidence must be retained.'
+} finally {Remove-Item -LiteralPath $temp -Recurse -Force;Remove-Item -LiteralPath $stagedGroup -Force}
+Write-Output 'PASS password-date filtering, denied/empty group membership, disk capacity, bounded sign-in evidence and exact SID/GPO scope.'
