@@ -1,142 +1,72 @@
-#Requires -Modules ActiveDirectory
-
+#Requires -Version 5.1
 <#
 .SYNOPSIS
-    Identifies the source computer that caused an AD account lockout.
-
+Read-only bounded lockout evidence from explicitly selected DCs.
 .DESCRIPTION
-    Queries all Domain Controllers for bad password attempt data on the target account,
-    then queries the PDC Emulator's Security event log for Event ID 4740 (account lockout)
-    to determine exactly which machine triggered the lockout.
-
-    Displays per-DC bad password stats and the lockout origin machine.
-
-.PARAMETER Identity
-    The SamAccountName of the locked-out user.
-
-.EXAMPLE
-    .\GetADAccountLockedOutLocation.ps1 -Identity "jdoe"
-
-.EXAMPLE
-    Import-Module .\GetADAccountLockedOutLocation.ps1
-    Get-LockedOutLocation -Identity "sqlclustsvc"
-
-.NOTES
-    Requires: PDC Emulator running Windows Server 2008 SP2 or later.
-              AD Web Services must be available on at least one DC.
-    Author:   blow-tech | based on original by Jason Walker
-    Version:  1.2
+Resolves the target SID independently of bad-password counters. Matches Event 4740
+by named XML fields and exact SID. Unavailable logs are UNKNOWN.
+Caller fields are evidence, not proof of the originating application.
 #>
-
 [CmdletBinding()]
-Param(
-    [Parameter(Mandatory = $true)]
-    [string]$Identity
+param(
+    [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Identity,
+    [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string[]]$DomainController,
+    [ValidateRange(1,30)][int]$DaysBack=1,
+    [ValidateRange(1,100000)][int]$MaxEvents=10000
 )
-
-Import-Module ActiveDirectory -ErrorAction Stop
-
-function Get-LockedOutLocation {
-    [CmdletBinding()]
-    Param(
-        [Parameter(Mandatory = $true)]
-        [string]$Identity
-    )
-
-    $dcCounter    = 0
-    $lockedStats  = [System.Collections.Generic.List[PSObject]]::new()
-
-    # ── Get all DCs ────────────────────────────────────────────────────────────
-    try {
-        $domainControllers = Get-ADDomainController -Filter * -ErrorAction Stop
-        $pdcEmulator       = $domainControllers | Where-Object { $_.OperationMasterRoles -contains "PDCEmulator" }
-        Write-Host "[*] Found $($domainControllers.Count) Domain Controller(s). PDC: $($pdcEmulator.HostName)" -ForegroundColor Cyan
-    }
-    catch {
-        Write-Warning "[!] Could not enumerate Domain Controllers: $_"
-        return
-    }
-
-    # ── Query each DC for bad password info ───────────────────────────────────
-    foreach ($dc in $domainControllers) {
-        $dcCounter++
-        Write-Progress -Activity "Querying DCs for lockout info" `
-                       -Status "Contacting $($dc.HostName)" `
-                       -PercentComplete (($dcCounter / $domainControllers.Count) * 100)
-
-        try {
-            $userInfo = Get-ADUser -Identity $Identity `
-                                   -Server $dc.HostName `
-                                   -Properties AccountLockoutTime, LastBadPasswordAttempt, BadPwdCount, LockedOut `
-                                   -ErrorAction Stop
-
-            if ($userInfo.LastBadPasswordAttempt) {
-                $lockedStats.Add([PSCustomObject]@{
-                    Name                   = $userInfo.SamAccountName
-                    SID                    = $userInfo.SID.Value
-                    LockedOut              = $userInfo.LockedOut
-                    BadPwdCount            = $userInfo.BadPwdCount
-                    DomainController       = $dc.HostName
-                    AccountLockoutTime     = $userInfo.AccountLockoutTime
-                    LastBadPasswordAttempt = $userInfo.LastBadPasswordAttempt.ToLocalTime()
-                })
-            }
-        }
-        catch {
-            Write-Warning "[!] Could not query $($dc.HostName): $_"
-        }
-    }
-
-    Write-Progress -Activity "Querying DCs for lockout info" -Completed
-
-    # ── Display per-DC stats ───────────────────────────────────────────────────
-    if ($lockedStats.Count -gt 0) {
-        Write-Host "`n--- Bad Password Stats per DC ---" -ForegroundColor Yellow
-        $lockedStats | Format-Table Name, LockedOut, DomainController, BadPwdCount, AccountLockoutTime, LastBadPasswordAttempt -AutoSize
-    }
-    else {
-        Write-Host "[i] No bad password attempts found for '$Identity' on any DC." -ForegroundColor Gray
-    }
-
-    # ── Query PDC Emulator event log for lockout origin ───────────────────────
-    Write-Host "[*] Querying PDC Emulator event log ($($pdcEmulator.HostName)) for Event ID 4740..." -ForegroundColor Cyan
-
-    try {
-        $lockedOutEvents = Get-WinEvent -ComputerName $pdcEmulator.HostName `
-                                        -FilterHashtable @{ LogName = 'Security'; Id = 4740 } `
-                                        -ErrorAction Stop |
-                           Sort-Object -Property TimeCreated -Descending
-    }
-    catch {
-        Write-Warning "[!] Could not retrieve events from PDC: $_"
-        return
-    }
-
-    # ── Match events to target user SID ───────────────────────────────────────
-    $targetSID = ($lockedStats | Select-Object -First 1).SID
-    $matchFound = $false
-
-    foreach ($event in $lockedOutEvents) {
-        if ($event.Properties[2].Value -match $targetSID) {
-            $matchFound = $true
-            [PSCustomObject]@{
-                User              = $event.Properties[0].Value
-                DomainController  = $event.MachineName
-                EventId           = $event.Id
-                LockedOutTime     = $event.TimeCreated
-                LockedOutLocation = $event.Properties[1].Value
-                Message           = ($event.Message -split "`r" | Select-Object -First 1)
-            } | Format-List
-        }
-    }
-
-    if (-not $matchFound) {
-        Write-Host "[i] No lockout event (4740) found for '$Identity' on the PDC Emulator." -ForegroundColor Gray
-        Write-Host "    The account may not be currently locked, or events may have been cleared." -ForegroundColor Gray
+function ConvertFrom-LockoutEvent {
+    param($Event,[string]$TargetSid)
+    if ([string]::IsNullOrWhiteSpace($TargetSid)) { throw 'Resolved target SID is required.' }
+    $xml=[xml]$Event.ToXml()
+    $data=@{}
+    foreach ($field in $xml.Event.EventData.Data) { $data[[string]$field.Name]=[string]$field.InnerText }
+    if ([string]::IsNullOrWhiteSpace($data.TargetSid)) { throw 'Event 4740 has no TargetSid.' }
+    if ($data.TargetSid -ne $TargetSid) { return }
+    # Windows 4740 version 0 uses TargetDomainName for the caller in its XML.
+    $caller=$data.CallerComputerName
+    if ([string]::IsNullOrWhiteSpace($caller)) { $caller=$data.TargetDomainName }
+    [pscustomobject]@{
+        User=$data.TargetUserName; TargetSid=$data.TargetSid
+        DomainController=$Event.MachineName; EventId=$Event.Id
+        LockedOutTime=$Event.TimeCreated; RecordId=$Event.RecordId
+        LockedOutLocation=$caller
+        CallerState=if ([string]::IsNullOrWhiteSpace($caller)) {'UNKNOWN'} else {'Recorded'}
     }
 }
-
-# ── Run if called directly (not dot-sourced) ──────────────────────────────────
+function Get-LockedOutLocation {
+    [CmdletBinding()]
+    param([string]$Identity,[string[]]$DomainController,[int]$DaysBack=1,[int]$MaxEvents=10000)
+    $ErrorActionPreference='Stop'
+    $controllers=@($DomainController | Sort-Object -Unique)
+    if (-not $controllers.Count -or @($controllers | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count) { throw 'Explicit DC scope required.' }
+    $user=Get-ADUser -Identity $Identity -Server $controllers[0] -ErrorAction Stop
+    $sid=[string]$user.SID
+    if ($sid -notmatch '^S-1-(\d+-)+\d+$') { throw 'Cannot resolve a valid target SID.' }
+    $results=New-Object 'System.Collections.Generic.List[object]'
+    foreach ($dc in $controllers) {
+        try {
+            $events=@()
+            try {
+                $events=@(Get-WinEvent -ComputerName $dc -FilterHashtable @{
+                    LogName='Security';Id=4740;StartTime=(Get-Date).AddDays(-$DaysBack)
+                } -MaxEvents $MaxEvents -ErrorAction Stop)
+            } catch {
+                if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') { throw }
+            }
+            $matches=@(foreach ($event in $events) { ConvertFrom-LockoutEvent $event $sid })
+            $results.Add([pscustomobject]@{
+                DomainController=$dc; Status=if ($events.Count -ge $MaxEvents) {'TRUNCATED'} else {'Collected'}
+                EventsChecked=$events.Count; Matches=$matches; Error=$null
+            })
+        } catch {
+            $results.Add([pscustomobject]@{DomainController=$dc;Status='UNKNOWN';EventsChecked=$null;Matches=@();Error=$_.Exception.Message})
+        }
+    }
+    $results
+}
 if ($MyInvocation.InvocationName -ne '.') {
-    Get-LockedOutLocation -Identity $Identity
+    Import-Module ActiveDirectory -ErrorAction Stop
+    $report=@(Get-LockedOutLocation @PSBoundParameters)
+    $report
+    if (@($report | Where-Object Status -ne 'Collected').Count) { throw 'Lockout evidence is incomplete; inspect UNKNOWN/TRUNCATED results.' }
 }

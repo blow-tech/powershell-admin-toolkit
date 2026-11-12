@@ -1,4 +1,4 @@
-<# 
+﻿<#
 .SYNOPSIS
 Advanced Active Directory Health Check Script with HTML Report
 
@@ -15,12 +15,12 @@ Author:blow_tech
 
 [CmdletBinding()]
 param(
-    [string]$DomainName = "",
+    [Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9][A-Za-z0-9.-]+$')][string]$DomainName,
     [string]$ReportPath = ".\AD-Health-Report-$((Get-Date).ToString('yyyy-MM-dd_HH-mm-ss')).html",
     [switch]$OpenReport
 )
 
-$ErrorActionPreference = "SilentlyContinue"
+$ErrorActionPreference = "Stop"
 
 function Write-Section {
     param([string]$Message)
@@ -37,6 +37,8 @@ function Get-SeverityFromStatus {
         "PASS" { "pass" }
         "WARN" { "warn" }
         "FAIL" { "fail" }
+        "UNKNOWN" { "warn" }
+        "ERROR" { "fail" }
         default { "info" }
     }
 }
@@ -65,7 +67,7 @@ function New-ResultObject {
 function ConvertTo-HtmlTable {
     param(
         [Parameter(Mandatory)]
-        [array]$Data,
+        [AllowEmptyCollection()][AllowNull()][array]$Data,
         [Parameter(Mandatory)]
         [string]$Title
     )
@@ -92,7 +94,7 @@ function ConvertTo-HtmlTable {
                 $html += "<td><span class='badge $class'>$value</span></td>"
             }
             else {
-                $safe = [System.Web.HttpUtility]::HtmlEncode([string]$value)
+                $safe = [System.Net.WebUtility]::HtmlEncode([string]$value)
                 $html += "<td>$safe</td>"
             }
         }
@@ -103,47 +105,53 @@ function ConvertTo-HtmlTable {
     return $html
 }
 
+function Invoke-Collection {
+    param([scriptblock]$ScriptBlock,[switch]$AllowNoEvents)
+    try {
+        $ErrorActionPreference='Stop'
+        $data=@(& $ScriptBlock)
+        [pscustomobject]@{Succeeded=$true;Data=$data;Error=$null}
+    } catch {
+        if ($AllowNoEvents -and $_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') {
+            return [pscustomobject]@{Succeeded=$true;Data=@();Error=$null}
+        }
+        [pscustomobject]@{Succeeded=$false;Data=@();Error=$_.Exception.Message}
+    }
+}
 function Invoke-CommandSafe {
     param([scriptblock]$ScriptBlock)
-    try { & $ScriptBlock } catch { $null }
+    $collection=Invoke-Collection $ScriptBlock
+    if (-not $collection.Succeeded) {
+        $Results.Add((New-ResultObject -Category 'Collection' -Check 'Query failed' -Target $DomainName -Status 'UNKNOWN' -Details $collection.Error))
+        return $null
+    }
+    $collection.Data
 }
-
 function Get-CommandTextOutput {
-    param([string]$Command, [string]$Arguments)
-
+    param([string]$Command,[string]$Arguments,[ValidateRange(1,300)][int]$TimeoutSeconds=60)
+    $p=$null
     try {
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = $Command
-        $psi.Arguments = $Arguments
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        $psi.UseShellExecute = $false
-        $psi.CreateNoWindow = $true
-
-        $p = New-Object System.Diagnostics.Process
-        $p.StartInfo = $psi
-        [void]$p.Start()
-        $stdout = $p.StandardOutput.ReadToEnd()
-        $stderr = $p.StandardError.ReadToEnd()
-        $p.WaitForExit()
-
-        [PSCustomObject]@{
-            ExitCode = $p.ExitCode
-            StdOut   = $stdout.Trim()
-            StdErr   = $stderr.Trim()
+        $psi=New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName=$Command; $psi.Arguments=$Arguments
+        $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
+        $psi.UseShellExecute=$false; $psi.CreateNoWindow=$true
+        $p=New-Object System.Diagnostics.Process
+        $p.StartInfo=$psi
+        $null=$p.Start()
+        $stdout=$p.StandardOutput.ReadToEndAsync()
+        $stderr=$p.StandardError.ReadToEndAsync()
+        if (-not $p.WaitForExit($TimeoutSeconds*1000)) {
+            $p.Kill(); $null=$p.WaitForExit(5000)
+            throw "Diagnostic command timed out after $TimeoutSeconds seconds."
         }
-    }
-    catch {
-        [PSCustomObject]@{
-            ExitCode = 999
-            StdOut   = ""
-            StdErr   = $_.Exception.Message
-        }
-    }
+        if (-not $stdout.Wait(5000) -or -not $stderr.Wait(5000)) { throw 'Diagnostic output stream did not close.' }
+        [pscustomobject]@{ExitCode=$p.ExitCode;StdOut=$stdout.Result.Trim();StdErr=$stderr.Result.Trim()}
+    } catch { [pscustomobject]@{ExitCode=999;StdOut='';StdErr=$_.Exception.Message} }
+    finally { if ($null -ne $p) { $p.Dispose() } }
 }
 
 # Load required modules
-Import-Module ActiveDirectory -ErrorAction SilentlyContinue
+Import-Module ActiveDirectory -ErrorAction Stop
 
 Write-Section "Starting Advanced Active Directory Health Check"
 
@@ -173,8 +181,8 @@ $Now = Get-Date
 
 Write-Section "Collecting Forest and Domain Information"
 
-$Forest = Invoke-CommandSafe { Get-ADForest }
-$Domain = Invoke-CommandSafe { Get-ADDomain }
+$Forest = Invoke-CommandSafe { Get-ADForest -Server $DomainName }
+$Domain = Invoke-CommandSafe { Get-ADDomain -Server $DomainName }
 
 if ($Forest -and $Domain) {
     $DomainOverview += [PSCustomObject]@{
@@ -187,8 +195,8 @@ if ($Forest -and $Domain) {
         DomainsInForest         = ($Forest.Domains -join ", ")
         Sites                   = ($Forest.Sites -join ", ")
         GlobalCatalogs          = ($Forest.GlobalCatalogs -join ", ")
-        RecycleBinEnabled       = [bool]$Forest.RecycleBinEnabled
-        TombstoneLifetimeDays   = $Forest.TombStoneLifetime
+        RecycleBinEnabled       = 'NotAssessed'
+        TombstoneLifetimeDays   = 'NotAssessed'
     }
 
     $Results.Add((New-ResultObject -Category "Directory" -Check "Forest Discovery" -Target $Forest.Name -Status "PASS" -Details "Forest and domain information collected successfully." -Recommendation "No action required."))
@@ -203,9 +211,10 @@ $DomainControllers = Invoke-CommandSafe { Get-ADDomainController -Filter * -Serv
 
 if ($DomainControllers) {
     foreach ($dc in $DomainControllers) {
-        $boot = Invoke-CommandSafe { (Get-CimInstance -ClassName Win32_OperatingSystem -ComputerName $dc.HostName).LastBootUpTime }
-        $os = Invoke-CommandSafe { (Get-CimInstance -ClassName Win32_OperatingSystem -ComputerName $dc.HostName).Caption }
-        $ip = Invoke-CommandSafe { (Resolve-DnsName $dc.HostName -Type A -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty IPAddress) }
+        $osSnapshot = Invoke-CommandSafe { Get-CimInstance -ClassName Win32_OperatingSystem -ComputerName $dc.HostName -OperationTimeoutSec 30 -ErrorAction Stop }
+        $boot = $osSnapshot.LastBootUpTime
+        $os = $osSnapshot.Caption
+        $ip = Invoke-CommandSafe { (Resolve-DnsName $dc.HostName -Type A -ErrorAction Stop | Select-Object -First 1 -ExpandProperty IPAddress) }
 
         $DCInventory += [PSCustomObject]@{
             HostName         = $dc.HostName
@@ -261,32 +270,32 @@ Write-Section "Checking Critical Services"
 $CriticalServices = "NTDS","DNS","Netlogon","DFSR","W32Time","KDC","ADWS"
 foreach ($dc in $DomainControllers) {
     foreach ($svc in $CriticalServices) {
-        $service = Invoke-CommandSafe { Get-Service -ComputerName $dc.HostName -Name $svc }
+        $service = Invoke-CommandSafe { Get-CimInstance -ClassName Win32_Service -ComputerName $dc.HostName -Filter "Name='$svc'" -OperationTimeoutSec 30 -ErrorAction Stop }
         if ($service) {
-            $status = if ($service.Status -eq "Running") { "PASS" } else { "FAIL" }
+            $status = if ($service.State -eq "Running") { "PASS" } else { "FAIL" }
 
             $ServiceResults += [PSCustomObject]@{
                 DomainController = $dc.HostName
                 Service          = $service.Name
                 DisplayName      = $service.DisplayName
                 Status           = $status
-                CurrentState     = $service.Status
-                StartType        = (Invoke-CommandSafe { (Get-CimInstance Win32_Service -ComputerName $dc.HostName -Filter "Name='$svc'").StartMode })
+                CurrentState     = $service.State
+                StartType        = $service.StartMode
             }
 
-            $Results.Add((New-ResultObject -Category "Services" -Check $service.Name -Target $dc.HostName -Status $status -Details "Service state: $($service.Status)." -Recommendation "Ensure service is set correctly and investigate dependencies if not running."))
+            $Results.Add((New-ResultObject -Category "Services" -Check $service.Name -Target $dc.HostName -Status $status -Details "Service state: $($service.State)." -Recommendation "Ensure service is set correctly and investigate dependencies if not running."))
         }
         else {
             $ServiceResults += [PSCustomObject]@{
                 DomainController = $dc.HostName
                 Service          = $svc
                 DisplayName      = $svc
-                Status           = "WARN"
+                Status           = "UNKNOWN"
                 CurrentState     = "Unknown"
                 StartType        = "Unknown"
             }
 
-            $Results.Add((New-ResultObject -Category "Services" -Check $svc -Target $dc.HostName -Status "WARN" -Details "Unable to query service." -Recommendation "Verify RPC/WMI access and permissions."))
+            $Results.Add((New-ResultObject -Category "Services" -Check $svc -Target $dc.HostName -Status "UNKNOWN" -Details "Unable to query service." -Recommendation "Verify RPC/WMI access and permissions."))
         }
     }
 }
@@ -314,10 +323,10 @@ foreach ($dc in $DomainControllers) {
 
 Write-Section "Checking FSMO Role Holders"
 
-$fsmo = Invoke-CommandSafe { netdom query fsmo }
+$fsmo = @($Domain.PDCEmulator,$Domain.RIDMaster,$Domain.InfrastructureMaster,$Forest.SchemaMaster,$Forest.DomainNamingMaster) | Where-Object { $_ }
 if ($fsmo) {
     $FsmoResults += [PSCustomObject]@{
-        Command = "netdom query fsmo"
+        Command = "Scoped AD domain/forest role properties"
         Output  = ($fsmo | Out-String).Trim()
     }
     $Results.Add((New-ResultObject -Category "Operations" -Check "FSMO Role Query" -Target $DomainName -Status "PASS" -Details "FSMO role holders returned successfully." -Recommendation "Validate holders are online and backed up."))
@@ -328,25 +337,15 @@ else {
 
 Write-Section "Checking Replication Summary"
 
-$replSummary = Get-CommandTextOutput -Command "repadmin.exe" -Arguments "/replsummary"
-$showrepl    = Get-CommandTextOutput -Command "repadmin.exe" -Arguments "/showrepl * /csv"
-$dcdiagQ     = Get-CommandTextOutput -Command "dcdiag.exe" -Arguments "/q"
-$dcdiagE     = Get-CommandTextOutput -Command "dcdiag.exe" -Arguments "/e /test:Advertising /test:Services /test:Replications /test:SysVolCheck /test:NetLogons /test:DNS"
-
-$RawCommandSections += [PSCustomObject]@{ Title = "repadmin /replsummary"; Output = $replSummary.StdOut; ExitCode = $replSummary.ExitCode }
-$RawCommandSections += [PSCustomObject]@{ Title = "dcdiag /q"; Output = $dcdiagQ.StdOut; ExitCode = $dcdiagQ.ExitCode }
-$RawCommandSections += [PSCustomObject]@{ Title = "dcdiag /e /test:Advertising /test:Services /test:Replications /test:SysVolCheck /test:NetLogons /test:DNS"; Output = $dcdiagE.StdOut; ExitCode = $dcdiagE.ExitCode }
-
-if ($replSummary.ExitCode -eq 0 -or $replSummary.StdOut) {
-    $status = if ($replSummary.StdOut -match "fails|error" -or $replSummary.ExitCode -ne 0) { "WARN" } else { "PASS" }
-    $Results.Add((New-ResultObject -Category "Replication" -Check "repadmin /replsummary" -Target $DomainName -Status $status -Details "Replication summary executed." -Recommendation "Review largest delta, failed partners, and lingering replication issues."))
+# Forest-wide native commands were removed: they exceeded the explicit domain scope.
+$Results.Add((New-ResultObject -Category 'Native diagnostics' -Check 'Extended dcdiag/repadmin' -Target $DomainName -Status 'UNKNOWN' -Details 'Not run. Schedule separately scoped lab-validated diagnostics; this report does not certify AD health.'))
+$replCollection = Invoke-Collection { Get-ADReplicationFailure -Target $DomainName -Scope Domain -ErrorAction Stop }
+$AdReplFailures = $replCollection.Data
+if (-not $replCollection.Succeeded) {
+    $Results.Add((New-ResultObject -Category 'Replication' -Check 'AD Replication Failure' -Target $DomainName -Status 'UNKNOWN' -Details $replCollection.Error))
+    $ReplicationResults += [pscustomobject]@{Server=$DomainName;FirstFailureTime='';FailureCount=$null;Partner='';Status='UNKNOWN';Details=$replCollection.Error}
 }
-else {
-    $Results.Add((New-ResultObject -Category "Replication" -Check "repadmin /replsummary" -Target $DomainName -Status "FAIL" -Details $replSummary.StdErr -Recommendation "Ensure repadmin is installed and run with required permissions."))
-}
-
-$AdReplFailures = Invoke-CommandSafe { Get-ADReplicationFailure -Target * -Scope Forest }
-if ($AdReplFailures) {
+elseif ($AdReplFailures) {
     foreach ($failure in $AdReplFailures) {
         $ReplicationResults += [PSCustomObject]@{
             Server           = $failure.Server
@@ -377,9 +376,8 @@ Write-Section "Checking Time Service"
 
 foreach ($dc in $DomainControllers) {
     $timeSource = Get-CommandTextOutput -Command "w32tm.exe" -Arguments "/query /computer:$($dc.HostName) /source"
-    $timeConfig = Get-CommandTextOutput -Command "w32tm.exe" -Arguments "/query /computer:$($dc.HostName) /configuration"
 
-    $status = if ($timeSource.ExitCode -eq 0 -and $timeSource.StdOut) { "PASS" } else { "WARN" }
+    $status = if ($timeSource.ExitCode -eq 0 -and $timeSource.StdOut) { "PASS" } else { "UNKNOWN" }
     $NetworkResults += [PSCustomObject]@{
         DomainController = $dc.HostName
         Check            = "Time Source"
@@ -394,15 +392,16 @@ Write-Section "Checking Disk Capacity"
 
 foreach ($dc in $DomainControllers) {
     $drives = Invoke-CommandSafe {
-        Get-CimInstance Win32_LogicalDisk -ComputerName $dc.HostName -Filter "DriveType=3" |
+        Get-CimInstance Win32_LogicalDisk -ComputerName $dc.HostName -Filter "DriveType=3" -OperationTimeoutSec 30 -ErrorAction Stop |
         Select-Object DeviceID,
                       @{N='SizeGB';E={[math]::Round($_.Size/1GB,2)}},
                       @{N='FreeGB';E={[math]::Round($_.FreeSpace/1GB,2)}},
-                      @{N='FreePercent';E={[math]::Round(($_.FreeSpace/$_.Size)*100,2)}}
+                      @{N='FreePercent';E={if ($null -ne $_.Size -and $_.Size -gt 0 -and $null -ne $_.FreeSpace -and $_.FreeSpace -ge 0 -and $_.FreeSpace -le $_.Size) {[math]::Round(($_.FreeSpace/$_.Size)*100,2)} else {$null}}}
     }
 
+    if (-not $drives) { $Results.Add((New-ResultObject -Category 'Capacity' -Check 'Disk enumeration' -Target $dc.HostName -Status 'UNKNOWN' -Details 'No usable disk observations returned.')) }
     foreach ($drive in $drives) {
-        $status = if ($drive.FreePercent -lt 10) { "FAIL" } elseif ($drive.FreePercent -lt 20) { "WARN" } else { "PASS" }
+        $status = if ($null -eq $drive.FreePercent) { 'UNKNOWN' } elseif ($drive.FreePercent -lt 10) { "FAIL" } elseif ($drive.FreePercent -lt 20) { "WARN" } else { "PASS" }
 
         $DiskResults += [PSCustomObject]@{
             DomainController = $dc.HostName
@@ -422,16 +421,16 @@ Write-Section "Checking Event Logs"
 $CriticalLogNames = @("Directory Service","DNS Server","System","DFS Replication")
 foreach ($dc in $DomainControllers) {
     foreach ($logName in $CriticalLogNames) {
-        $events = Invoke-CommandSafe {
+        $eventCollection = Invoke-Collection -AllowNoEvents -ScriptBlock {
             Get-WinEvent -ComputerName $dc.HostName -FilterHashtable @{
                 LogName   = $logName
                 Level     = 1,2,3
                 StartTime = (Get-Date).AddDays(-1)
-            } -MaxEvents 50
+            } -MaxEvents 1000 -ErrorAction Stop
         }
 
-        $count = @($events).Count
-        $status = if ($count -eq 0) { "PASS" } elseif ($count -le 10) { "WARN" } else { "FAIL" }
+        $count = if ($eventCollection.Succeeded) { @($eventCollection.Data).Count } else { $null }
+        $status = if (-not $eventCollection.Succeeded -or $count -ge 1000) { "UNKNOWN" } elseif ($count -eq 0) { "PASS" } elseif ($count -le 10) { "WARN" } else { "FAIL" }
 
         $EventSummary += [PSCustomObject]@{
             DomainController = $dc.HostName
@@ -440,7 +439,7 @@ foreach ($dc in $DomainControllers) {
             Status           = $status
         }
 
-        $detail = "$count warning/error/critical events in last 24 hours from log '$logName'."
+        $detail = if ($eventCollection.Succeeded) { "Up to $count warning/error/critical events (1000-record cap) in last 24 hours from log '$logName'." } else { $eventCollection.Error }
         $recommendation = "Review recurring event IDs, correlate with replication, DNS, DFSR, and service failures."
 
         $Results.Add((New-ResultObject -Category "Events" -Check $logName -Target $dc.HostName -Status $status -Details $detail -Recommendation $recommendation))
@@ -460,7 +459,7 @@ foreach ($dc in $DomainControllers) {
         Details          = if ($nl.StdOut) { $nl.StdOut } else { $nl.StdErr }
     }
 
-    $Results.Add((New-ResultObject -Category "Connectivity" -Check "nltest /dsgetdc" -Target $dc.HostName -Status $status -Details (if ($nl.StdOut) { $nl.StdOut } else { $nl.StdErr }) -Recommendation "Validate SRV records, site/subnet mappings, and locator functionality."))
+    $Results.Add((New-ResultObject -Category "Connectivity" -Check "nltest /dsgetdc" -Target $dc.HostName -Status $status -Details $(if ($nl.StdOut) { $nl.StdOut } else { $nl.StdErr }) -Recommendation "Validate SRV records, site/subnet mappings, and locator functionality."))
 }
 
 Write-Section "Checking AD Database and SYSVOL Paths"
@@ -483,12 +482,12 @@ foreach ($dc in $DomainControllers) {
 
 Write-Section "Checking AD Optional Features, Trusts, and Privileged Groups"
 
-$optionalFeatures = Invoke-CommandSafe { Get-ADOptionalFeature -Filter * }
-$trusts           = Invoke-CommandSafe { Get-ADTrust -Filter * }
+$optionalFeatures = Invoke-CommandSafe { Get-ADOptionalFeature -Server $DomainName -Filter * }
+$trusts           = Invoke-CommandSafe { Get-ADTrust -Server $DomainName -Filter * }
 $privGroups       = @("Domain Admins","Enterprise Admins","Schema Admins","Administrators")
 
 foreach ($group in $privGroups) {
-    $members = Invoke-CommandSafe { Get-ADGroupMember -Identity $group -Recursive | Select-Object -ExpandProperty SamAccountName }
+    $members = Invoke-CommandSafe { Get-ADGroupMember -Server $DomainName -Identity $group -Recursive | Select-Object -ExpandProperty SamAccountName }
     if ($members) {
         $memberCount = @($members).Count
         $status = if ($memberCount -gt 15) { "WARN" } else { "PASS" }
@@ -499,12 +498,7 @@ foreach ($group in $privGroups) {
     }
 }
 
-if ($Forest -and $Forest.RecycleBinEnabled) {
-    $Results.Add((New-ResultObject -Category "Recovery" -Check "AD Recycle Bin" -Target $Forest.Name -Status "PASS" -Details "Recycle Bin is enabled." -Recommendation "No action required."))
-}
-else {
-    $Results.Add((New-ResultObject -Category "Recovery" -Check "AD Recycle Bin" -Target $DomainName -Status "WARN" -Details "Recycle Bin is not enabled or could not be confirmed." -Recommendation "Consider enabling AD Recycle Bin after change review."))
-}
+$Results.Add((New-ResultObject -Category 'Recovery' -Check 'AD Recycle Bin' -Target $DomainName -Status 'UNKNOWN' -Details 'NotAssessed: Get-ADForest does not provide a RecycleBinEnabled property; verify optional-feature enabled scopes and recovery in the lab.'))
 
 if ($trusts) {
     foreach ($trust in $trusts) {
@@ -518,18 +512,18 @@ else {
 Write-Section "Generating Summary"
 
 $PassCount = @($Results | Where-Object Status -eq "PASS").Count
-$WarnCount = @($Results | Where-Object Status -eq "WARN").Count
-$FailCount = @($Results | Where-Object Status -eq "FAIL").Count
+$WarnCount = @($Results | Where-Object Status -in "WARN","UNKNOWN").Count
+$FailCount = @($Results | Where-Object Status -in "FAIL","ERROR").Count
 $TotalChecks = @($Results).Count
 
 $OverallStatus = if ($FailCount -gt 0) { "FAIL" } elseif ($WarnCount -gt 0) { "WARN" } else { "PASS" }
 
 $Recommendations = $Results |
-    Where-Object { $_.Status -in @("WARN","FAIL") } |
+    Where-Object { $_.Status -in @("WARN","FAIL","UNKNOWN","ERROR") } |
     Select-Object Category, Check, Target, Status, Recommendation
 
 $TopFindings = $Results |
-    Where-Object { $_.Status -in @("FAIL","WARN") } |
+    Where-Object { $_.Status -in @("FAIL","WARN","UNKNOWN","ERROR") } |
     Select-Object -First 15 Category, Check, Target, Status, Details, Recommendation
 
 $css = @"
@@ -733,8 +727,8 @@ $cardsHtml = @"
 
 $rawHtml = ""
 foreach ($section in $RawCommandSections) {
-    $safeTitle = [System.Web.HttpUtility]::HtmlEncode($section.Title)
-    $safeOut = [System.Web.HttpUtility]::HtmlEncode($section.Output)
+    $safeTitle = [System.Net.WebUtility]::HtmlEncode($section.Title)
+    $safeOut = [System.Net.WebUtility]::HtmlEncode($section.Output)
     $rawHtml += "<div class='section'><h2>Raw Command Output - $safeTitle</h2><div class='muted'>Exit Code: $($section.ExitCode)</div><pre>$safeOut</pre></div>"
 }
 
@@ -759,7 +753,11 @@ $htmlParts += "<div class='footer'>Generated by Advanced AD Health Check Script 
 $htmlParts += "</div></body></html>"
 
 $html = $htmlParts -join "`r`n"
-Set-Content -Path $ReportPath -Value $html -Encoding UTF8
+$full=[IO.Path]::GetFullPath($ReportPath)
+if([IO.File]::Exists($full) -or -not [IO.Directory]::Exists([IO.Path]::GetDirectoryName($full))){throw 'Use an existing protected output parent and new report filename.'}
+$temp=$full+'.'+[guid]::NewGuid().ToString('N')+'.partial'
+[IO.File]::WriteAllText($temp,$html,[Text.Encoding]::UTF8)
+[IO.File]::Move($temp,$full)
 
 Write-Host ""
 Write-Host "===============================" -ForegroundColor Green
@@ -770,3 +768,5 @@ Write-Host "Report saved to: $ReportPath" -ForegroundColor Cyan
 if ($OpenReport) {
     Start-Process $ReportPath
 }
+
+if (@($Results | Where-Object Status -in @('UNKNOWN','FAIL','ERROR')).Count) { throw "Report contains incomplete or failed checks: $ReportPath" }

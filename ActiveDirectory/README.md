@@ -1,5 +1,7 @@
 # ActiveDirectory
 
+September continuation: [migration notes](../REMEDIATION-2026-09.md) supersede the historical examples below. Several actual paths are extensionless. Last-logon output is approximate replicated data, not an all-DC maximum; account-expiry reporting previews by default; lockout/logon collectors require explicit scope; MFA output describes Graph registration, not enforcement.
+
 PowerShell scripts for Active Directory lifecycle reporting, account auditing, and operational health checks. Built for production environments running Windows Server with AD DS.
 
 All scripts require the **ActiveDirectory** RSAT module and appropriate read permissions unless otherwise noted. No scripts make write changes to AD unless explicitly stated.

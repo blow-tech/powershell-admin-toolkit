@@ -1,67 +1,41 @@
-<#
-.SYNOPSIS
-    Analyzes Windows Scheduled Tasks for potentially suspicious configurations and behaviors.
-
-.DESCRIPTION
-    This script examines all scheduled tasks on a Windows system and analyzes them for 
-    potentially suspicious indicators like:
-    - Use of temp directories
-    - Encoded/obfuscated PowerShell commands
-    - Suspiciously short or random task names
-    - Execution of script files (.js, .vbs, .ps1, etc.)
-    
-    The script provides detailed output about any suspicious tasks found and can optionally
-    show analysis of all tasks regardless of suspicion level.
-
-.PARAMETER VerboseOutput
-    When specified, displays analysis results for all tasks, not just suspicious ones.
-    
-.EXAMPLE
-    .\Check-SuspiciousScheduledTasks.ps1
-    Analyzes scheduled tasks and displays only those flagged as suspicious.
-
-.EXAMPLE
-    .\Check-SuspiciousScheduledTasks.ps1 -VerboseOutput
-    Analyzes and displays results for all scheduled tasks, suspicious or not.
-
-.NOTES
-    Requires:
-    - Windows 8/Server 2012 or later
-    - ScheduledTasks PowerShell module
-    - Administrative privileges recommended
-
-.OUTPUTS
-    Displays a formatted table of suspicious tasks (or all tasks with -VerboseOutput)
-    including task name, path, action, triggers, state and suspicious findings.
-#>
-
+#Requires -Version 5.1
 [CmdletBinding()]
-param(
-    [switch]$VerboseOutput
-)
-
-function Get-ScheduledTaskInfo {
-    Write-Error "[ERROR] No tasks found or unable to retrieve scheduled tasks."
-    return
-}
-
-$analysisResults = foreach ($t in $allTasks) {
-    Analyze-Task -TaskObject $t
-}
-
-if ($VerboseOutput) {
-    $analysisResults | Format-Table -AutoSize
-}
-else {
-    $suspiciousTasks = $analysisResults | Where-Object {$_.Suspicious -eq $true}
-    if ($suspiciousTasks) {
-        Write-Host "`n[RESULT] Suspicious tasks detected:"
-        $suspiciousTasks | Format-Table -AutoSize
+param([switch]$VerboseOutput)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+function Get-TaskAnalysis {
+    param([Parameter(Mandatory)]$Task)
+    $indicators = New-Object 'System.Collections.Generic.List[string]'
+    $actions = @($Task.Actions)
+    if ($actions.Count -eq 0) { throw "Task has no analyzable actions: $($Task.TaskName)" }
+    $commands = foreach ($action in $actions) {
+        if ($null -eq $action) { throw 'Null task action.' }
+        if ($action.PSObject.Properties['ClassId']) {
+            $indicators.Add('COM handler: manual review required')
+            "COM:$($action.ClassId)"
+        } elseif ($action.PSObject.Properties['Execute'] -and -not [string]::IsNullOrWhiteSpace($action.Execute)) {
+            $arguments = if ($action.PSObject.Properties['Arguments']) { [string]$action.Arguments } else { '' }
+            $command = "$($action.Execute) $arguments"
+            if ($command -match '(?i)(\\temp\\|%temp%|\\appdata\\|\\downloads\\)') { $indicators.Add('Execution from a user-writable location') }
+            if ($command -match '(?i)(-e(n(c(odedcommand)?)?)?\s+|FromBase64String|DownloadString|Invoke-Expression|\biex\b)') { $indicators.Add('Encoded or dynamic command') }
+            if ($command -match '(?i)(\.(ps1|vbs|js|hta)\b|\b(mshta|wscript|cscript)(\.exe)?\b)') { $indicators.Add('Script execution: review purpose and origin') }
+            $command
+        } else { throw "Unsupported or malformed action in $($Task.TaskName)" }
     }
-    else {
-        Write-Host "`n[RESULT] No suspicious tasks found."
+    [pscustomobject]@{ TaskName=$Task.TaskName; TaskPath=$Task.TaskPath; Actions=($commands -join '; '); Suspicious=($indicators.Count -gt 0); Indicators=@($indicators.ToArray()) }
+}
+function Invoke-TaskAssessment {
+    try {
+        $tasks = @(Get-ScheduledTask -ErrorAction Stop)
+        if ($tasks.Count -eq 0) { throw 'No tasks retrieved; expected scope cannot be verified.' }
+        $results = @($tasks | ForEach-Object { Get-TaskAnalysis -Task $_ })
+        [pscustomobject]@{ Succeeded=$true; TasksChecked=$results.Count; Findings=@($results | Where-Object Suspicious); Results=$results; Error=$null }
+    } catch {
+        [pscustomobject]@{ Succeeded=$false; TasksChecked=0; Findings=@(); Results=@(); Error=$_.Exception.Message }
     }
 }
-
-# Optional: Export the full analysis if needed
-# $analysisResults | Export-Csv -Path .\ScheduledTasksAnalysis.csv -NoTypeInformation
+$result = Invoke-TaskAssessment
+$result
+if (-not $result.Succeeded) { throw "Task assessment UNKNOWN: $($result.Error)" }
+if ($VerboseOutput) { $result.Results | Format-Table -AutoSize }
+Write-Information "Evaluated $($result.TasksChecked) tasks. Indicators are heuristic; this is not proof that a host is clean." -InformationAction Continue

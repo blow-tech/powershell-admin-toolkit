@@ -1,16 +1,16 @@
-<#
+﻿<#
 =============================================================================================
 Name:           Risky Users Report in Microsoft Entra
 Version:        1.0
 Website:        o365reports.com
 
-Script Highlights:  
+Script Highlights:
 ~~~~~~~~~~~~~~~~~
 1. Exports all risky users in your organization to a CSV file.
 2. Lists all users who have a history of risky activity.
 3. Finds users based on specific risk levels and risk states.
 4. Supports exporting risky users over a specified time.
-5. Automatically install the Microsoft Graph PowerShell module (if not installed already) upon your confirmation.
+5. Uses an existing Graph session in the explicitly expected tenant. History retrieval is optional.
 6. The script can be executed with an MFA-enabled account too.
 7. Supports Certificate-based Authentication too.
 8. The script is scheduler friendly.
@@ -22,65 +22,33 @@ For detailed Script execution: https://o365reports.com/2025/05/20/how-to-get-all
 
 Param
 (
-    [nullable[int]]$ShowRiskyUsersFromLastNDays,
+    [ValidateRange(1,3650)][nullable[int]]$ShowRiskyUsersFromLastNDays,
     [ValidateSet("Low", "Medium", "High", "None")]
     [string[]]$RiskLevel,
     [ValidateSet("ConfirmedSafe", "Remediated", "Dismissed", "AtRisk", "ConfirmedCompromised", "None")]
     [string[]]$RiskState,
     [switch]$CreateSession,
-    [string]$TenantId,
+    [Parameter(Mandatory)][string]$TenantId,
+    [switch]$IncludeHistory,
     [string]$ClientId,
     [string]$CertificateThumbprint
 )
 
-Function Connect_MgGraph
-{
- #Check for module installation
- $Module=Get-Module -Name Microsoft.Graph.Identity.SignIns -ListAvailable
- if($Module.count -eq 0) 
- { 
-  Write-Host Microsoft Graph PowerShell SDK is not available  -ForegroundColor yellow  
-  $Confirm= Read-Host Are you sure you want to install module? [Y] Yes [N] No 
-  if($Confirm -match "[yY]") 
-  { 
-   Write-host "Installing Microsoft Graph PowerShell module..."
-   Install-Module Microsoft.Graph.Identity.SignIns -Repository PSGallery -Scope CurrentUser -AllowClobber -Force
-  }
-  else
-  {
-   Write-Host "Microsoft Graph PowerShell module is required to run this script. Please install module using Install-Module Microsoft.Graph.Identity.SignIns cmdlet." 
-   Exit
-  }
- }
- #Disconnect Existing MgGraph session
- if($CreateSession.IsPresent)
- {
-  Disconnect-MgGraph
- }
-
- Write-Host Connecting to Microsoft Graph...
- if(($TenantId -ne "") -and ($ClientId -ne "") -and ($CertificateThumbprint -ne ""))  
- {  
-  Connect-MgGraph  -TenantId $TenantId -AppId $ClientId -CertificateThumbprint $CertificateThumbprint -NoWelcome
- }
- else
- {
-  Connect-MgGraph -Scopes "IdentityRiskyUser.Read.All" -NoWelcome
- }
-}
-Connect_MgGraph
-
+$ErrorActionPreference='Stop'
+$context=Get-MgContext
+if ($null -eq $context -or $context.TenantId -ne $TenantId) { throw 'Connect Graph to the expected TenantId first.' }
+$OutputRecords=New-Object 'System.Collections.Generic.List[object]'
 $Location = Get-Location
-$CurrentDate = Get-Date
-$ExportCSV = "$Location\M365_Risky_Users_Report$($CurrentDate.ToString('yyyy-MMM-dd-ddd hh-mm-ss tt')).csv"
+$CurrentDate = [datetime]::UtcNow
+$ExportCSV = Join-Path $Location "M365_Risky_Users_Report$($CurrentDate.ToString('yyyyMMddTHHmmss'))_$([guid]::NewGuid().ToString('N')).csv"
 $Filter = @()
-$ExportResult =""   
-$ExportResults = @() 
+$ExportResult =""
+$ExportResults = @()
 
 if ($ShowRiskyUsersFromLastNDays -ne $null) {
-    $Filter += "(RiskLastUpdatedDateTime ge $($CurrentDate.AddDays(-$ShowRiskyUsersFromLastNDays).ToString('yyyy-MM-dd')))"
+    $Filter += "(RiskLastUpdatedDateTime ge $($CurrentDate.AddDays(-$ShowRiskyUsersFromLastNDays).ToString('yyyy-MM-ddTHH:mm:ssZ')))"
 } else {
-    $Filter += "(RiskLastUpdatedDateTime ge $($CurrentDate.AddDays(-90).ToString('yyyy-MM-dd')))"
+    $Filter += "(RiskLastUpdatedDateTime ge $($CurrentDate.AddDays(-90).ToString('yyyy-MM-ddTHH:mm:ssZ')))"
 }
 
 $Count=0
@@ -99,12 +67,7 @@ Get-MgRiskyUser -All -Filter "$($Filter)" | ForEach-Object {
  $UPN = $_.UserPrincipalName
  $IsDeleted = $_.IsDeleted
  $IsProcessing = $_.IsProcessing
- $UserRiskEventType = ((Get-MgRiskyUserHistory -RiskyUserId $_.Id).Activity | Select -ExpandProperty RiskEventTypes | Select -Unique) -join ', '
-
- if ($UserRiskEventType -eq "") {
-    $UserRiskEventType = "none"
- }
-
+ $UserRiskEventType = 'Not collected'
  $Print = 1
 
  # Apply filters based on the param values...
@@ -114,31 +77,19 @@ Get-MgRiskyUser -All -Filter "$($Filter)" | ForEach-Object {
  #Export users to output file
  if($Print -eq 1)
  {
+  if ($IncludeHistory) {
+    $history=@(Get-MgRiskyUserHistory -RiskyUserId $Id -All -ErrorAction Stop)
+    $UserRiskEventType=(@($history.Activity.RiskEventTypes | Sort-Object -Unique) -join ', ')
+  }
   $PrintedLogs++
   $ExportResult=[PSCustomObject]@{'Risk Last Updated Date Time'=$RiskLastUpdatedDateTime; 'Risky User UPN'=$UPN; 'Risky User Name'=$UserDisplayName; 'Risk Level'=$UserRiskLevel; 'Remediation Action'=$UserRiskDetail; 'Risk State'=$UserRiskState; 'Risk Event Type'=$UserRiskEventType; 'Risky User Id'=$Id; 'Is User Deleted'=$IsDeleted; 'Is Backend Processing'=$IsProcessing;}
-  $ExportResult | Export-Csv -Path $ExportCSV -Notype -Append
+  $OutputRecords.Add($ExportResult)
  }
 }
 
-#Disconnect the session after execution
-Disconnect-MgGraph | Out-Null
-
-Write-Host `n~~ Script prepared by AdminDroid Community ~~`n -ForegroundColor Green
-Write-Host "~~ Check out " -NoNewline -ForegroundColor Green; Write-Host "admindroid.com" -ForegroundColor Yellow -NoNewline; Write-Host " to get access to 1800+ Microsoft 365 reports. ~~" -ForegroundColor Green `n
-
-#Open output file after execution
-if((Test-Path -Path $ExportCSV) -eq "True")
-{   
-    Write-Host " The Output file availble in: " -NoNewline -ForegroundColor Yellow; Write-Host "$ExportCSV" `n 
-    Write-Host " Exported report has $PrintedLogs risky user's records." 
-    $Prompt = New-Object -ComObject wscript.shell
-    $UserInput = $Prompt.popup("Do you want to open output file?",` 0,"Open Output File",4)
-    if ($UserInput -eq 6)
-    {
-        Invoke-Item "$ExportCSV"
-    }
-}
-else
-{
-    Write-Host "No logs found" 
-}
+if ($OutputRecords.Count -gt 0) {
+ $temporary=$ExportCSV + '.partial'
+ $OutputRecords | Export-Csv -LiteralPath $temporary -NoTypeInformation
+ [IO.File]::Move($temporary,$ExportCSV)
+ Write-Output "Exported $($OutputRecords.Count) risky users: $ExportCSV"
+} else { Write-Output 'Enumeration succeeded; no matching risky users.' }

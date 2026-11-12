@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Monitors system resources in real-time with customizable thresholds and alerts.
 
@@ -22,7 +22,7 @@
     The interval in seconds between measurements. Default is 5 seconds.
 
 .PARAMETER Duration
-    How long to monitor in minutes. Default is 0 (run indefinitely).
+    How long to monitor in minutes. Default is 15; indefinite runs are not supported.
 
 .PARAMETER CPUThreshold
     CPU usage threshold percentage. Default is 80.
@@ -61,8 +61,8 @@ param(
     [int]$Interval = 5,
 
     [Parameter(Mandatory=$false)]
-    [ValidateRange(0, 1440)]
-    [int]$Duration = 0,
+    [ValidateRange(1, 1440)]
+    [int]$Duration = 15,
 
     [Parameter(Mandatory=$false)]
     [ValidateRange(0, 100)]
@@ -84,31 +84,34 @@ param(
     [string]$ExportFormat = "CSV"
 )
 
+$ErrorActionPreference='Stop'
+if ([math]::Ceiling($Duration*60.0/$Interval) -gt 10000) { throw 'Sample budget exceeds 10000. Increase Interval or reduce Duration.' }
 # Ensure export directory exists
 if (-not (Test-Path $ExportPath)) {
     New-Item -ItemType Directory -Path $ExportPath -Force | Out-Null
 }
 
-$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$timestamp = (Get-Date -Format 'yyyyMMdd_HHmmss') + '-' + [guid]::NewGuid().ToString('N')
 $exportFile = Join-Path $ExportPath "SystemResources_$timestamp"
-$monitoringData = @()
+$monitoringData = New-Object 'System.Collections.Generic.List[object]'
 $startTime = Get-Date
 $endTime = if ($Duration -gt 0) { $startTime.AddMinutes($Duration) } else { $null }
 
 function Get-SystemMetrics {
-    $cpu = (Get-Counter '\Processor(_Total)\% Processor Time').CounterSamples.CookedValue
-    $memory = (Get-Counter '\Memory\% Committed Bytes In Use').CounterSamples.CookedValue
-    $disk = Get-Counter '\LogicalDisk(*)\% Free Space' | 
-            Where-Object { $_.CounterSamples.InstanceName -notmatch '_Total' } |
-            Select-Object @{Name='Drive';Expression={$_.CounterSamples.InstanceName}},
-                        @{Name='FreeSpace';Expression={100 - $_.CounterSamples.CookedValue}}
-    
-    $network = Get-Counter '\Network Interface(*)\Bytes Total/sec' |
-               Where-Object { $_.CounterSamples.InstanceName -notmatch 'isatap' } |
-               Select-Object @{Name='Interface';Expression={$_.CounterSamples.InstanceName}},
-                           @{Name='BytesPerSec';Expression={$_.CounterSamples.CookedValue}}
+    $cpu = (Get-Counter '\Processor(_Total)\% Processor Time' -ErrorAction Stop).CounterSamples.CookedValue
+    $memory = (Get-Counter '\Memory\% Committed Bytes In Use' -ErrorAction Stop).CounterSamples.CookedValue
+    if ($null -eq $cpu -or $null -eq $memory) {throw 'Required CPU/memory counters unavailable.'}
+    $disk = (Get-Counter '\LogicalDisk(*)\% Free Space' -ErrorAction Stop).CounterSamples |
+            Where-Object { $_.InstanceName -ne '_Total' } |
+            Select-Object @{Name='Drive';Expression={$_.InstanceName}},
+                        @{Name='FreeSpace';Expression={$_.CookedValue}}
 
-    return @{
+    $network = (Get-Counter '\Network Interface(*)\Bytes Total/sec' -ErrorAction Stop).CounterSamples |
+               Where-Object { $_.InstanceName -notmatch 'isatap' } |
+               Select-Object @{Name='Interface';Expression={$_.InstanceName}},
+                           @{Name='BytesPerSec';Expression={$_.CookedValue}}
+
+    return [pscustomobject]@{
         Timestamp = Get-Date
         CPU = [math]::Round($cpu, 2)
         Memory = [math]::Round($memory, 2)
@@ -119,9 +122,9 @@ function Get-SystemMetrics {
 
 function Test-Thresholds {
     param($metrics)
-    
+
     $alerts = @()
-    
+
     if ($metrics.CPU -gt $CPUThreshold) {
         $alerts += "CPU usage is at $($metrics.CPU)% (Threshold: $CPUThreshold%)"
     }
@@ -133,18 +136,18 @@ function Test-Thresholds {
             $alerts += "Drive $($drive.Drive) usage is at $([math]::Round(100 - $drive.FreeSpace, 2))% (Threshold: $DiskThreshold%)"
         }
     }
-    
+
     return $alerts
 }
 
 try {
     Write-Host "Starting system resource monitoring..."
     Write-Host "Press Ctrl+C to stop monitoring"
-    
+
     while (-not $endTime -or (Get-Date) -lt $endTime) {
         $metrics = Get-SystemMetrics
-        $monitoringData += $metrics
-        
+        $monitoringData.Add($metrics)
+
         # Display current metrics
         Clear-Host
         Write-Host "System Resource Monitor - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
@@ -159,14 +162,14 @@ try {
         $metrics.Network | ForEach-Object {
             Write-Host "  $($_.Interface): $([math]::Round($_.BytesPerSec/1MB, 2)) MB/s"
         }
-        
+
         # Check thresholds and display alerts
         $alerts = Test-Thresholds -metrics $metrics
         if ($alerts) {
             Write-Host "`nAlerts:"
             $alerts | ForEach-Object { Write-Host "- $_" -ForegroundColor Red }
         }
-        
+
         Start-Sleep -Seconds $Interval
     }
 } catch {
@@ -176,15 +179,18 @@ try {
     if ($monitoringData) {
         switch ($ExportFormat) {
             "CSV" {
-                $monitoringData | Export-Csv -Path "$exportFile.csv" -NoTypeInformation
+                $monitoringData | Select-Object Timestamp,CPU,Memory,
+                    @{Name='DiskJson';Expression={ConvertTo-Json -InputObject @($_.Disk) -Compress}},
+                    @{Name='NetworkJson';Expression={ConvertTo-Json -InputObject @($_.Network) -Compress}} |
+                    Export-Csv -LiteralPath "$exportFile.csv" -NoTypeInformation -NoClobber
             }
             "XML" {
-                $monitoringData | Export-Clixml -Path "$exportFile.xml"
+                $monitoringData | Export-Clixml -Path "$exportFile.xml" -NoClobber
             }
             "JSON" {
-                $monitoringData | ConvertTo-Json -Depth 10 | Out-File "$exportFile.json"
+                $monitoringData | ConvertTo-Json -Depth 10 | Out-File "$exportFile.json" -NoClobber
             }
         }
         Write-Host "`nMonitoring data exported to $exportFile.$($ExportFormat.ToLower())"
     }
-} 
+}

@@ -1,5 +1,7 @@
 # scripts
 
+September continuation: [migration notes](../REMEDIATION-2026-09.md) supersede the historical examples below. The actual M365 expiry path has no extension, uses `-TenantId -DaysToExpiry`, previews by default and never registers schedules. The two legacy WMI inventories no longer query MSI software and mark that section NOT COLLECTED. GPO exports use explicit domains and do not mix their results.
+
 General-purpose administration scripts covering inventory collection, system reporting, disk cleanup, and Microsoft 365 notifications. Organised into subfolders by function.
 
 ---
@@ -23,23 +25,16 @@ scripts/
 ## cleanup/
 
 ### `DiskCleanup.ps1`
-Automates disk space reclamation on Windows Server. Targets common high-volume locations: Windows temp files, user temp directories, IIS logs, CBS logs, and Windows Update cache. Reports space reclaimed per location and total freed.
+Default behavior inventories `.tmp` files older than 30 days inside explicit `-AllowedPath` directories. It never automatically cleans Windows evidence, logs, backups or the component store.
 
-Designed for scheduled execution. Does not touch application data or user profile documents.
-
-**Parameters:**
-| Parameter | Required | Description |
-|---|---|---|
-| `-LogPath` | No | Path for log output. Default: `C:\Logs\DiskCleanup.log` |
-| `-WhatIf` | No | Reports what would be deleted without removing anything |
+Read-only inventory example (requires read access to the approved directory):
 
 ```powershell
-# Preview what would be removed
-.\DiskCleanup.ps1 -WhatIf
-
-# Run and log output
-.\DiskCleanup.ps1 -LogPath "C:\Logs\DiskCleanup.log"
+.\cleanup\DiskCleanup.ps1 -AllowedPath '<ApprovedTempDirectory>' |
+    Export-Csv -LiteralPath '.\cleanup-review.csv' -NoTypeInformation
 ```
+
+Review the manifest and its SHA256 before any separately approved deletion. Execution requires `-Execute`, `-ManifestPath`, `-ManifestSha256`, and `-AllowedPath`; `-WhatIf` previews this exact execution path. All candidates are revalidated. See [the migration notes](../REMEDIATION-2026-09.md).
 
 ---
 

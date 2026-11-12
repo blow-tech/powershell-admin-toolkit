@@ -1,7 +1,10 @@
-## Active Directory: PowerShell Script to Check when Users Passwords Were Last Set (Changed) With CSV Output ##
-
-## Usage: Provide a numeric value to the 'AddDays' property, and provide a path to the 'Export-CSV' command to match your requirements before running the script
-
-Import-Module activedirectory
-$When = ((Get-Date).AddDays(-30)).Date #Change the 'AddDays' property to match the number of Days back you want to query
-Get-ADUser -filter {whenCreated -ge $When} -properties * | sort-object UserPrincipalName | select-object UserPrincipalName, Name, passwordlastset, passwordneverexpires | Export-CSV -path "c:\BoxBuild\RecentUserPassWordChanges.csv" -NoTypeInformation #Change this path to match your environment
+﻿<# Reports password changes in the requested age window; creation time is not password-change time.
+Requires RSAT AD read access. Read-only; no automatic export or implicit domain. #>
+[CmdletBinding()]
+param([Parameter(Mandatory)][string]$Server,[Parameter(Mandatory)][string]$SearchBase,[ValidateRange(1,3650)][int]$Days=30)
+$ErrorActionPreference='Stop'
+Import-Module ActiveDirectory -ErrorAction Stop
+$cutoff=[datetime]::UtcNow.AddDays(-$Days)
+Get-ADUser -Server $Server -SearchBase $SearchBase -Filter * -Properties PasswordLastSet,PasswordNeverExpires -ErrorAction Stop |
+ Where-Object {$null -ne $_.PasswordLastSet -and $_.PasswordLastSet.ToUniversalTime() -ge $cutoff} |
+ Select-Object ObjectGUID,UserPrincipalName,Name,PasswordLastSet,PasswordNeverExpires

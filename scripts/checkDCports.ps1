@@ -1,25 +1,19 @@
-#https://learn-powershell.net/2011/02/21/querying-udp-ports-with-powershell/
-#still working out the udp portion
-
-$DCPorts = @{'TCP' = 135,137,139,445,389,636,3268,3269,88,53; 'UDP' = 135,137,138,445,389,88,53}
-
-function testport{
-    param($dc)
-    #start with TCP Ports
-    $DCPorts['TCP'] | foreach {
-        Test-NetConnection -ComputerName $dc -Port $_
-    } | select ComputerName, RemotePort, remoteAddress, @{name='TestSucceeded';expression={$_.TcpTestSucceeded}}
-    #then UDP Ports
-    $DCPorts['UDP'] | foreach {$port = $null; $port = $_
-        $dc | select @{name='Computername';expression={$_}}, `
-            @{name='RemotePort';expression={$port}}, `
-            @{name='remoteAddress';expression={}}, `
-            @{name='TestSucceeded';expression={}}  
-    }
+﻿<# Read-only TCP connection attempts to explicit hosts. This produces real network traffic when run;
+run only in an approved diagnostic window. UDP is not implemented and is explicitly NotAssessed.
+No implicit forest discovery. Results do not prove LDAP bind, DNS resolution or service readiness. #>
+[CmdletBinding()]
+param([Parameter(Mandatory)][ValidateCount(1,16)][string[]]$ComputerName,[ValidateRange(1,65535)][int[]]$TcpPort=@(135,139,445,389,636,3268,3269,88,53),[ValidateRange(100,10000)][int]$TimeoutMilliseconds=2000)
+$ErrorActionPreference='Stop'
+if($TcpPort.Count -gt 32){throw 'At most 32 ports per invocation.'}
+$failed=$false
+foreach($computer in ($ComputerName | Sort-Object -Unique)){
+ foreach($port in ($TcpPort | Sort-Object -Unique)){
+  $client=New-Object Net.Sockets.TcpClient;$pending=$null;$state='UNKNOWN';$detail=''
+  try{$pending=$client.BeginConnect($computer,$port,$null,$null);if(-not $pending.AsyncWaitHandle.WaitOne($TimeoutMilliseconds)){throw 'Timed out'};$client.EndConnect($pending);$state='Connected'}
+  catch{$failed=$true;$detail=$_.Exception.Message}
+  finally{if($pending){$pending.AsyncWaitHandle.Close()};$client.Close()}
+  [pscustomobject]@{ComputerName=$computer;Port=$port;Protocol='TCP';State=$state;Details=$detail}
+ }
+ [pscustomobject]@{ComputerName=$computer;Port=$null;Protocol='UDP';State='NotAssessed';Details='No UDP validation is implemented.'}
 }
-
-Get-ADForest | select -ExpandProperty domains -pv domain | foreach{
-    Get-ADDomainController -filter * -server $domain | foreach{
-        testport -dc $_.HostName
-    } 
-}
+if($failed){throw 'One or more TCP attempts were unavailable. Retain the partial evidence; do not infer a service failure solely from connectivity.'}

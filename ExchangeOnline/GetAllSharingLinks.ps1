@@ -1,132 +1,46 @@
-<#
-=============================================================================================
-Name:           Find All Sharing Links in SharePoint Online Using PowerShell  
-Version:        1.2
-Website:        blow_tech
-
-~~~~~~~~~~~~~~~~~~
-Script Highlights:
-~~~~~~~~~~~~~~~~~~ 
-1. Exports all sharing links across your SharePoint Online environment. 
-2. Automatically checks the PnP PowerShell module and installs it with your confirmation if it’s missing. 
-3. Detects files and folders shared with Anyone (anonymous) links only. 
-4. Produces a report focused on organization-wide (company) sharing links. 
-5. Lists items shared exclusively via people-specific links. 
-6. Includes filtering options to show only active, expired, soon-to-expire, never-expiring, or soon-to-expire links. 
-7. Supports execution using accounts with MFA. 
-8. Exports the report results in CSV format. 
-9. Compatible with certificate-based authentication (CBA). 
-10.The script is scheduler friendly. 
-
-
-Change Log
-~~~~~~~~~~
-
-    V1.0 (Jun 10, 2025) - File created
-    V1.1 (Jun 12, 2025) - Added function call for PnP PowerShell module installation
-
-
-Note:
-~~~~~
-Make sure the app registration used for certificate based authentication is granted with Application permissions
-for "Files.Read.All" and "Sites.Read.All" to ensure it can retrieve the required details. Else, you will get the
-following error:"Get-PnPFileSharingLink: Either scp or roles claim need to be present in the token."
-
-
-For detailed script execution: https://o365reports.com/2025/06/10/export-all-sharing-links-sharepoint-online
-
-============================================================================================
-#>
-Param
-(
-    [Parameter(Mandatory = $false)]
-    [string]$AdminName,
-    [string]$Password,
-    [String]$ClientId,
-    [String]$CertificateThumbprint,
-    [string]$TenantName,
-    [string]$ImportCsv,
-    [Switch]$ActiveLinks,
-    [Switch]$ExpiredLinks,
-    [Switch]$LinksWithExpiration,
-    [Switch]$NeverExpiresLinks,
-    [int]$SoonToExpireInDays,
-    [Switch]$GetAnyoneLinks,
-    [Switch]$GetCompanyLinks,
-    [Switch]$GetSpecificPeopleLinks 
+﻿# Sharing-link observations for explicitly supplied sites, not a tenant-wide access audit.
+[CmdletBinding()]
+param(
+ [Parameter(Mandatory=$true)][ValidatePattern('^[a-zA-Z0-9-]+$')][string]$TenantName,
+ [Parameter(Mandatory=$true)][guid]$ClientId,
+ [Parameter(Mandatory=$true)][string]$CertificateThumbprint,
+ [Parameter(Mandatory=$true)][uri[]]$SiteUrl,
+ [Parameter(Mandatory=$true)][string]$OutputPath,
+ [switch]$ActiveLinks,[switch]$ExpiredLinks,[switch]$LinksWithExpiration,[switch]$NeverExpiresLinks,
+ [ValidateRange(0,36500)][int]$SoonToExpireInDays=0,
+ [switch]$GetAnyoneLinks,[switch]$GetCompanyLinks,[switch]$GetSpecificPeopleLinks
 )
-
-#Check for module availability
-Function Installation-Module
-{
- $Module = Get-InstalledModule -Name PnP.PowerShell -MinimumVersion 1.12.0 -ErrorAction SilentlyContinue
- If($Module -eq $null)
- {
-  Write-Host SharePoint PnP PowerShell Module is not available -ForegroundColor Yellow
-  $Confirm = Read-Host Are you sure you want to install module? [Yy] Yes [Nn] No
-  If($Confirm -match "[yY]") 
-  { 
-   Write-Host "Installing PnP PowerShell module..."
-   Install-Module PnP.PowerShell -Force -AllowClobber -Scope CurrentUser
-   Import-Module -Name Pnp.Powershell        
-  } 
-  Else
-  { 
-   Write-Host PnP PowerShell module is required to connect SharePoint Online.Please install module using Install-Module PnP.PowerShell cmdlet. 
-   Exit
-  }
- }   
-}
-
-#SPO Site connection 
-Function Connection-Module
-{
- param
- (
-  [Parameter(Mandatory = $true)]
-  [String] $Url
- )
- Write-Host `nConnecting to SharePoint Online...
- if(($AdminName -ne "") -and ($Password -ne "") -and ($ClientId -ne ""))
- {
-  $SecuredPassword = ConvertTo-SecureString -AsPlainText $Password -Force
-  $Credential  = New-Object System.Management.Automation.PSCredential $AdminName,$SecuredPassword
-  Connect-PnPOnline -Url $Url -Credential $Credential -ClientId $ClientId
- }
- elseif($TenantName -ne "" -and $ClientId -ne "" -and $CertificateThumbprint -ne "")
- {
-  Connect-PnPOnline -Url $Url -ClientId $ClientId -Thumbprint $CertificateThumbprint  -Tenant "$TenantName.onmicrosoft.com" 
- }
- else
- {
-  Connect-PnPOnline -Url $Url -Interactive -ClientId $ClientId
- }
-}
-
+$ErrorActionPreference='Stop'
+if (($ActiveLinks -and $ExpiredLinks) -or ($LinksWithExpiration -and $NeverExpiresLinks) -or ($SoonToExpireInDays -and ($ExpiredLinks -or $NeverExpiresLinks)) -or (([int]$GetAnyoneLinks.IsPresent+[int]$GetCompanyLinks.IsPresent+[int]$GetSpecificPeopleLinks.IsPresent) -gt 1)) { throw 'Contradictory filters.' }
+foreach ($url in $SiteUrl) { if ($url.Scheme -ne 'https' -or $url.Host -ne "$TenantName.sharepoint.com" -or $url.UserInfo -or $url.Port -ne 443) { throw 'Site URL must match the explicitly selected commercial-cloud tenant.' } }
+Import-Module PnP.PowerShell -ErrorAction Stop
+. (Join-Path $PSScriptRoot '../scripts/common/ReportSafety.ps1')
+$SnapshotUtc=[datetime]::UtcNow
+$ResultsBuffer=New-Object 'System.Collections.Generic.List[object]'
+$script:ItemCount=0
 Function Get-SharedLinks
 {
  $ExcludedLists = @("Form Templates","Style Library","Site Assets","Site Pages", "Preservation Hold Library", "Pages", "Images",
                        "Site Collection Documents", "Site Collection Images")
- $DocumentLibraries = Get-PnPList | Where-Object {$_.Hidden -eq $False -and $_.Title -notin $ExcludedLists -and $_.BaseType -eq "DocumentLibrary"}
+ $DocumentLibraries = Get-PnPList -Connection $Connection -ErrorAction Stop | Where-Object {$_.Hidden -eq $False -and $_.Title -notin $ExcludedLists -and $_.BaseType -eq "DocumentLibrary"}
  Foreach($List in $DocumentLibraries){
- $ListItems = Get-PnPListItem -List $List -PageSize 2000 
- ForEach ($Item in $ListItems) 
+ $ListItems = Get-PnPListItem -List $List -PageSize 2000 -Connection $Connection -ErrorAction Stop
+ ForEach ($Item in $ListItems)
  {
   $FileName=$Item.FieldValues.FileLeafRef
   $ObjectType=$Item.FileSystemObjectType
   Write-Progress -Activity ("Site Name: $Site") -Status ("Processing Item: "+ $FileName )
-  $HasUniquePermissions = Get-PnPProperty -ClientObject $Item -Property HasUniqueRoleAssignments
-  
-  If ($HasUniquePermissions) 
-  {    
+
+  If ($true)
+  {
    $FileUrl=$Item.FieldValues.FileRef
    if($ObjectType -eq "File")
    {
-    $FileSharingLinks= Get-PnPFileSharingLink -Identity $FileUrl
+    $FileSharingLinks= Get-PnPFileSharingLink -Identity $FileUrl -Connection $Connection -ErrorAction Stop
    }
    elseif($ObjectType -eq "Folder")
    {
-    $FileSharingLinks= Get-PnPFolderSharingLink -Folder $FileUrl
+    $FileSharingLinks= Get-PnPFolderSharingLink -Folder $FileUrl -Connection $Connection -ErrorAction Stop
    }
    else
    {
@@ -152,23 +66,23 @@ Function Get-SharedLinks
 
     $Permission=$Link.Type
     $SharedLink=$Link.WebUrl
-    $PasswordProtected=$FileSharingLink.HasPassword 
+    $PasswordProtected=$FileSharingLink.HasPassword
     $BlockDownload=$Link.PreventsDownload
     $RoleList = $FileSharingLink.Roles -join ","
     $ExpirationDate=$FileSharingLink.ExpirationDateTime
     $Users=$FileSharingLink.GrantedToIdentitiesV2.User.Email
     $DirectUsers= $Users -join ","
-    $CurrentDateTime = (Get-Date).Date
+    $CurrentDateTime = $SnapshotUtc
     If($ExpirationDate -ne $null)
     {
-     $ExpiryDate = ([DateTime]$ExpirationDate).ToLocalTime()
-     $ExpiryDays= (New-TimeSpan -Start $CurrentDateTime -End $ExpiryDate).Days
-     If($ExpiryDate -lt $CurrentDateTime)
+     $ExpiryDate = ([DateTimeOffset]$ExpirationDate).UtcDateTime
+     $ExpiryDays= ($ExpiryDate - $CurrentDateTime).TotalDays
+     If($ExpiryDate -le $CurrentDateTime)
      {
       $LinkStatus = "Expired"
       $ExpiryDateCalculation=$ExpiryDays * (-1)
       $FriendlyExpiryTime="Expired $ExpiryDateCalculation days ago"
-     } 
+     }
      else
      {
       $LinkStatus="Active"
@@ -188,27 +102,27 @@ Function Get-SharedLinks
     {
      Continue
     }
-     
+
     #Filter for expired links
     elseif(($ExpiredLinks.IsPresent) -and ($LinkStatus -ne "Expired"))
     {
      Continue
     }
-     
+
     #Filter for finding links with expiration
     elseif(($LinksWithExpiration.IsPresent) -and ($ExpirationDate -eq $null))
     {
      Continue
-    } 
-     
+    }
+
     #Filter for finding links with no expiry
     elseif(($NeverExpiresLinks.IsPresent) -and ($FriendlyExpiryTime -ne "Never Expires"))
     {
      Continue
     }
-     
+
     #Filter for finding soon-to-expire links
-    elseif(($SoonToExpireInDays -ne "") -and (($ExpirationDate -eq $null) -or ($SoonToExpireInDays -lt $ExpiryDays) -or ($ExpiryDays -lt 0)))  
+    elseif(($SoonToExpireInDays -gt 0) -and (($ExpirationDate -eq $null) -or ($SoonToExpireInDays -lt $ExpiryDays) -or ($LinkStatus -eq "Expired")))
     {
      Continue
     }
@@ -223,89 +137,30 @@ Function Get-SharedLinks
                             "Access Type"      = $Permission
                             "Roles" =$RoleList
                             "Users" = $DirectUsers
-                            "File Type"         = $Item.FieldValues.File_x0020_Type 
+                            "File Type"         = $Item.FieldValues.File_x0020_Type
                             "Link Status"     = $LinkStatus
                             "Link Expiry Date"  = $ExpiryDate
                             "Days Since/To Expiry" =$ExpiryDays
                             "Friendly Expiry Time" =$FriendlyExpiryTime
                             "Password Protected" =$PasswordProtected
-                            "Block Download"    =$BlockDownload                   
-                            "Shared Link"       = $SharedLink  
+                            "Block Download"    =$BlockDownload
+                            "Shared Link"       = $SharedLink
      }
-     $Results | Export-CSV  -path $ReportOutput -NoTypeInformation -Append  -Force
-     $Global:ItemCount++                     
+     $ResultsBuffer.Add($Results)
+     $script:ItemCount++
     }
    }
   }
  }
 }
 
-Installation-Module
-$TimeStamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
-$ReportOutput = "$PSScriptRoot\SPO_SharingLinks_Report_ $TimeStamp.csv"
-$Global:ItemCount = 0
-
-If($ClientId -eq "")
-{
- $ClientId= Read-Host "ClientId is required to connect PnP PowerShell. Enter ClientId"
+foreach ($url in $SiteUrl) {
+ $Connection=$null
+ try {
+  $Connection=Connect-PnPOnline -Url $url.AbsoluteUri -ClientId $ClientId.ToString() -Thumbprint $CertificateThumbprint -Tenant "$TenantName.onmicrosoft.com" -ReturnConnection -ErrorAction Stop
+  $Site=$url.AbsoluteUri
+  Get-SharedLinks
+ } finally { $Connection=$null } # Release returned connection without disconnecting caller session.
 }
-
-If($TenantName -eq "")
-{
-    $TenantName = Read-Host "Enter your tenant name (e.g., 'contoso' for 'contoso.onmicrosoft.com')"
-}
-
-#Check for CSV input
-If($ImportCsv -ne "")
-{
- $SiteCollections = Import-Csv -Path $ImportCsv
- Foreach($Site in $SiteCollections){
-  $SiteUrl = $Site.SiteUrl
-  Connection-Module -Url $SiteUrl
-    $Site = (Get-PnPWeb | Select Title).Title
-    Get-SharedLinks
-  
-  
-  Disconnect-PnPOnline -WarningAction SilentlyContinue
- }
-}
-
-#Process all sites
-Else
-{
- Connection-Module -Url "https://$TenantName-admin.sharepoint.com"
- $SiteCollections = Get-PnPTenantSite  | Where -Property Template -NotIn ("SRCHCEN#0", "REDIRECTSITE#0", "SPSMSITEHOST#0", "APPCATALOG#0", "POINTPUBLISHINGHUB#0", "EDISC#0", "STS#-1")
- Disconnect-PnPOnline -WarningAction SilentlyContinue
- ForEach($Site in $SiteCollections)
- {
-  $SiteUrl = $Site.Url
-  Connection-Module -Url $SiteUrl  
-  $Site = (Get-PnPWeb | Select Title).Title
- 
-   Get-SharedLinks
-
- }
- Disconnect-PnPOnline -WarningAction SilentlyContinue
-
-}
-
- #Write-Progress -Completed
- Write-Host `n~~ Script prepared by AdminDroid Community ~~`n -ForegroundColor Green
- Write-Host "~~ Check out " -NoNewline -ForegroundColor Green; Write-Host "admindroid.com" -ForegroundColor Yellow -NoNewline; Write-Host " to get access to 1800+ Microsoft 365 reports. ~~" -ForegroundColor Green 
- 
-if((Test-Path -Path $ReportOutput) -eq "True") 
-{
-    Write-Host `nThe output file contains $Global:ItemCount sharing links.
-    Write-Host `n The Output file availble in:  -NoNewline -ForegroundColor Yellow
-    Write-Host $ReportOutput `n
-      $Prompt = New-Object -ComObject wscript.shell   
-    $UserInput = $Prompt.popup("Do you want to open output file?",`   
-    0,"Open Output File",4)   
-    If ($UserInput -eq 6)   
-    {   
-        Invoke-Item "$ReportOutput"   
-    } 
-}
-else{
-    Write-Host "No Records Found"
-}
+Export-NewReport @($ResultsBuffer.ToArray()) $OutputPath
+[pscustomobject]@{Status='Complete for selected sites/libraries';Count=$ResultsBuffer.Count;SnapshotUtc=$SnapshotUtc;OutputPath=$OutputPath}

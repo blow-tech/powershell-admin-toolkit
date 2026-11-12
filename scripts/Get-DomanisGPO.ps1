@@ -1,49 +1,30 @@
-## Setting the script paramaters
-param (
-    [parameter(Mandatory = $true)]
-    [String[]]$Domians,
-    [parameter(Mandatory = $true)]
-    [String]$ExportPath
+#Requires -Version 5.1
+# Read-only GPO inventory. One independent output per explicit domain.
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory)][Alias('Domians')][ValidateNotNullOrEmpty()][string[]]$Domains,
+    [Parameter(Mandatory)][string]$ExportPath
 )
-$Results = @()
-
-## Looping through each domain specified in the doamin variable
-foreach ($domain in $Domians) {
-    
-Write-Host "Checking GPO's on $($domain)" -ForegroundColor Green
-
-## Get list of all GPOs on domain
-$AllGpos = Get-GPO -All -Domain $domain
-
-## Looping through each GPO
-foreach ($Gpo in $AllGpos) {
-
-## typecast XML results
-[xml]$GpoReportXml = Get-GPOReport -Guid $Gpo.ID -ReportType xml -Domain $domain
-
-## set GP assigned variable
-if (-not $GpoReportXml.GPO.LinksTo) {
-$GPAssigned = "False"
-    }
-if ($GpoReportXml.GPO.LinksTo){
-$GPAssigned = "True"
-    }
-
-## Create hash table for properties
-$properties = @{
-GPO_Name = $gpo.DisplayName
-GPO_Assigned = $GPAssigned
-Doamin = $gpo.DomainName
-Created = $gpo.CreationTime
-Last_Modified = $gpo.ModificationTime
-Linked_OU = $GpoReportXml.GPO.LinksTo.SOMPath -join ','
-}
-
-## out results to variable 
-$Results += New-Object psobject -Property $properties
-}
-
-## Exprot resutls
-$Results | Select-Object GPO_Name,Doamin,GPO_Assigned,Created,Last_Modified,Linked_OU | 
-Export-Csv -Path $ExportPath\$domain-GPOReport.csv -NoTypeInformation
+$ErrorActionPreference='Stop'
+$directory=Get-Item -LiteralPath $ExportPath -ErrorAction Stop
+if (-not $directory.PSIsContainer -or $directory.PSProvider.Name -ne 'FileSystem') {throw 'Existing output directory required.'}
+$plan=@(foreach ($domain in ($Domains | Sort-Object -Unique)) {
+    if ($domain -notmatch '^(?=.{1,253}$)[a-zA-Z0-9]+([.-][a-zA-Z0-9]+)*$') {throw "Invalid domain: $domain"}
+    $path=Join-Path $directory.FullName "$domain-GPOReport.csv"
+    if (Test-Path -LiteralPath $path) {throw "Output already exists: $path"}
+    [pscustomobject]@{Domain=$domain;Path=$path}
+})
+foreach ($item in $plan) {
+    $domain=$item.Domain
+    $results=@(foreach ($gpo in (Get-GPO -All -Domain $domain -ErrorAction Stop)) {
+        [xml]$report=Get-GPOReport -Guid $gpo.Id -ReportType Xml -Domain $domain -ErrorAction Stop
+        if ($null -eq $report.GPO) {throw "Invalid GPO report in $domain"}
+        [pscustomobject]@{
+            GPO_Name=$gpo.DisplayName; Doamin=$gpo.DomainName
+            GPO_Assigned=[bool]$report.GPO.LinksTo; Created=$gpo.CreationTime
+            Last_Modified=$gpo.ModificationTime; Linked_OU=($report.GPO.LinksTo.SOMPath -join ',')
+        }
+    })
+    $results | Export-Csv -LiteralPath $item.Path -NoTypeInformation -Encoding UTF8 -NoClobber -ErrorAction Stop
+    [pscustomobject]@{Domain=$domain;Count=$results.Count;OutputPath=$item.Path;Status='Collected'}
 }
